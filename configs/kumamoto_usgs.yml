@@ -1,0 +1,70 @@
+region:
+  name: kumamoto_2016
+  bbox: [129.6, 31.8, 131.5, 33.6]
+  crs_local: EPSG:6670
+  start_date: "2000-01-01"
+  end_date: "2026-06-28"
+
+filters:
+  min_magnitude: 2.0
+  max_depth_km: 40
+  mechanism_min_magnitude: 4.0
+  max_events_for_waveforms: 500
+
+simulation:
+  dt_days: 30
+  years: 100
+  n_ensemble: 1000
+  shear_modulus_pa: 3.0e10
+  poisson_ratio: 0.25
+  effective_friction_range: [0.2, 0.6]
+  cohesion_pa_range: [1.0e6, 1.0e7]
+  effective_normal_stress_pa_range: [1.0e7, 1.0e8]
+  random_seed: 42
+
+outputs:
+  write_maps: true
+  write_dashboard: true
+  write_report: true
+
+data_sources:
+  use_fdsn: false
+  fdsn_client: USGS
+  catalog_source: USGS ComCat
+  event_csv: data/raw/usgs/kumamoto_2000_2026_m2_depth40_events.csv
+  use_jshis: false
+  use_gnss: false
+  use_active_faults: false
+  use_waveforms: false
+resources:
+  memory_mode: auto
+  db_engine: auto
+  max_memory_fraction: 0.35
+  in_memory_row_limit: 100000
+  db_bulk_load_row_threshold: 100000
+  batch_rows_min: 10000
+  batch_rows_max: 250000
+
+visualization_3d:
+  enabled: true
+  engine: plotly
+  html_standalone: true
+  include_plotlyjs: true
+  time_bin_days: 30
+  mode: cumulative
+  max_events: 20000
+  max_fault_segments: 1000
+  max_frames: 300
+  vertical_exaggeration: 2.0
+  event_marker_size_min: 2
+  event_marker_size_max: 12
+  color_events_by: magnitude
+  color_faults_by: fault_score
+  color_stress_by: cfs_pa
+  color_failure_by: failure_index_p50
+  show_known_faults: true
+  show_inferred_faults: true
+  show_gnss_vectors: true
+  show_stress: true
+  show_failure_index: true
+  gnss_vector_scale: 50000.0

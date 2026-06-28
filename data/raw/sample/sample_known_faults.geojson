@@ -1,0 +1,49 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "segment_id": "known_futagawa_sample",
+        "source": "synthetic_sample",
+        "fault_type": "right-lateral strike-slip",
+        "strike": 235.0,
+        "dip": 70.0,
+        "rake": -170.0,
+        "length_km": 38.0,
+        "width_km": 14.0,
+        "top_depth_km": 0.0,
+        "bottom_depth_km": 14.0,
+        "is_inferred": false,
+        "confidence": 0.75,
+        "notes": "Artificial trace loosely shaped after a Kumamoto-like fault for software testing only."
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [[130.72, 32.68], [130.95, 32.82], [131.18, 32.98]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "segment_id": "known_hinagu_sample",
+        "source": "synthetic_sample",
+        "fault_type": "right-lateral strike-slip",
+        "strike": 210.0,
+        "dip": 75.0,
+        "rake": -160.0,
+        "length_km": 28.0,
+        "width_km": 12.0,
+        "top_depth_km": 0.0,
+        "bottom_depth_km": 12.0,
+        "is_inferred": false,
+        "confidence": 0.65,
+        "notes": "Artificial sample fault, not for scientific interpretation."
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [[130.55, 32.35], [130.68, 32.55], [130.80, 32.73]]
+      }
+    }
+  ]
+}

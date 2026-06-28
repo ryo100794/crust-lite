@@ -1,0 +1,65 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "crust-lite"
+version = "0.1.0"
+description = "Low-resource research prototype for relative fault-candidate and stress-state assessment around Japan."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "crust-lite contributors" }]
+dependencies = [
+  "obspy",
+  "numpy",
+  "scipy",
+  "pandas",
+  "polars",
+  "duckdb",
+  "geopandas",
+  "shapely",
+  "pyproj",
+  "rasterio",
+  "xarray",
+  "h5py",
+  "scikit-learn",
+  "matplotlib",
+  "cartopy",
+  "streamlit",
+  "pydantic",
+  "typer",
+  "rich",
+  "pyyaml",
+  "plotly",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff", "mypy"]
+stress = ["cutde"]
+waveform = ["pyrocko"]
+fast-json = ["orjson"]
+
+[project.scripts]
+crust-lite = "crust_lite.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "C4", "SIM"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.12"
+warn_unused_configs = true
+ignore_missing_imports = true
+exclude = ["data", "outputs", ".deps"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

@@ -1,0 +1,6 @@
+mechanism_id,event_id,strike1,dip1,rake1,strike2,dip2,rake2,scalar_moment_nm,source
+mech001,ev001,235,70,-170,142,81,-20,8.0e18,synthetic_sample
+mech002,ev006,232,68,-165,139,76,-22,4.0e19,synthetic_sample
+mech003,ev007,230,66,-160,138,78,-25,2.0e17,synthetic_sample
+mech004,ev012,238,72,-172,146,82,-18,1.5e16,synthetic_sample
+mech005,ev019,228,64,-155,136,74,-28,8.0e15,synthetic_sample
