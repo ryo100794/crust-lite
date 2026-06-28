@@ -37,6 +37,16 @@ data_sources:
   use_active_faults: false
   use_waveforms: false
 
+preprocessing:
+  compact_enabled: true
+  time_bin_days: 30
+  spatial_bin_km: 10.0
+  depth_bin_km: 5.0
+  magnitude_bin: 0.5
+  retain_event_level_compact: true
+  materialize_database: true
+  prefer_compact_tables: true
+
 resources:
   memory_mode: auto
   db_engine: auto

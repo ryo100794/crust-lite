@@ -73,6 +73,19 @@ class ResourceConfig:
     batch_rows_min: int = 10_000
     batch_rows_max: int = 250_000
 
+
+@dataclass(frozen=True)
+class PreprocessingConfig:
+    compact_enabled: bool = True
+    time_bin_days: int = 30
+    spatial_bin_km: float = 10.0
+    depth_bin_km: float = 5.0
+    magnitude_bin: float = 0.5
+    retain_event_level_compact: bool = True
+    materialize_database: bool = True
+    prefer_compact_tables: bool = True
+
+
 @dataclass(frozen=True)
 class Visualization3DConfig:
     enabled: bool = True
@@ -107,6 +120,7 @@ class AppConfig:
     outputs: OutputConfig
     data_sources: DataSourceConfig
     resources: ResourceConfig = field(default_factory=ResourceConfig)
+    preprocessing: PreprocessingConfig = field(default_factory=PreprocessingConfig)
     visualization_3d: Visualization3DConfig = field(default_factory=Visualization3DConfig)
     path: Path | None = None
 
@@ -144,6 +158,7 @@ def load_config(path: str | Path) -> AppConfig:
         outputs=cfg.outputs,
         data_sources=cfg.data_sources,
         resources=cfg.resources,
+        preprocessing=cfg.preprocessing,
         visualization_3d=cfg.visualization_3d,
         path=config_path,
     )
@@ -157,6 +172,7 @@ def parse_config(raw: dict[str, Any]) -> AppConfig:
     sources_raw = _get(raw, "data_sources")
     viz_raw = raw.get("visualization_3d", {})
     resources_raw = raw.get("resources", {})
+    preprocessing_raw = raw.get("preprocessing", {})
 
     bbox = _tuple_float(region_raw.get("bbox"), 4, "region.bbox")
     min_lon, min_lat, max_lon, max_lat = bbox
@@ -198,6 +214,16 @@ def parse_config(raw: dict[str, Any]) -> AppConfig:
     if resources.in_memory_row_limit < 0:
         raise ValueError("resources.in_memory_row_limit must be non-negative")
 
+    preprocessing = PreprocessingConfig(**{**PreprocessingConfig().__dict__, **preprocessing_raw})
+    if preprocessing.time_bin_days <= 0:
+        raise ValueError("preprocessing.time_bin_days must be positive")
+    if preprocessing.spatial_bin_km <= 0:
+        raise ValueError("preprocessing.spatial_bin_km must be positive")
+    if preprocessing.depth_bin_km <= 0:
+        raise ValueError("preprocessing.depth_bin_km must be positive")
+    if preprocessing.magnitude_bin <= 0:
+        raise ValueError("preprocessing.magnitude_bin must be positive")
+
     viz = Visualization3DConfig(**{**Visualization3DConfig().__dict__, **viz_raw})
     if viz.mode not in {"cumulative", "window"}:
         raise ValueError("visualization_3d.mode must be cumulative or window")
@@ -237,6 +263,7 @@ def parse_config(raw: dict[str, Any]) -> AppConfig:
             write_report=bool(_get(outputs_raw, "write_report")),
         ),
         resources=resources,
+        preprocessing=preprocessing,
         data_sources=DataSourceConfig(
             use_fdsn=bool(_get(sources_raw, "use_fdsn")),
             use_jshis=bool(_get(sources_raw, "use_jshis")),

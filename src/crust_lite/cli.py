@@ -18,6 +18,7 @@ from crust_lite.data_sources.waveforms import fetch_waveforms
 from crust_lite.logging import configure_logging, get_logger
 from crust_lite.paths import ProjectPaths
 from crust_lite.processing.catalog_qc import run_catalog_qc
+from crust_lite.processing.data_compaction import compact_data
 from crust_lite.processing.fault_inference import infer_faults
 from crust_lite.processing.gnss_features import build_gnss_features
 from crust_lite.processing.historical_quality import build_historical_quality
@@ -68,7 +69,21 @@ def command_build_features(config_path: str, verbose: bool = False) -> dict[str,
     gnss = build_gnss_features(paths)
     wave = build_waveform_features(paths, is_sample_data=bool(qc.get("is_sample_data", False)))
     history = build_historical_quality(config, paths)
-    return {"catalog_qc": qc, "gnss_features": gnss, "waveform_features": wave, "historical_quality": history}
+    compact = command_compact_data(config_path, verbose=verbose) if config.preprocessing.compact_enabled else {"skipped": True}
+    return {
+        "catalog_qc": qc,
+        "gnss_features": gnss,
+        "waveform_features": wave,
+        "historical_quality": history,
+        "data_compaction": compact,
+    }
+
+
+def command_compact_data(config_path: str, verbose: bool = False) -> dict[str, Any]:
+    config, paths = _context(config_path, verbose)
+    if not config.preprocessing.compact_enabled:
+        return {"skipped": True, "reason": "preprocessing.compact_enabled=false"}
+    return compact_data(config, paths)
 
 
 def command_infer_faults(config_path: str, verbose: bool = False) -> dict[str, Any]:
@@ -162,7 +177,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         p.add_argument("--verbose", action="store_true")
         return p
 
-    for name in ["fetch", "domestic-ingest", "build-features", "infer-faults", "transfer-functions", "stress", "simulate", "export", "dashboard"]:
+    for name in ["fetch", "domestic-ingest", "build-features", "compact-data", "infer-faults", "transfer-functions", "stress", "simulate", "export", "dashboard"]:
         p = add_common(name)
         if name in {"fetch", "transfer-functions"}:
             p.add_argument("--sample", action="store_true")
@@ -182,6 +197,7 @@ def _run_argparse(argv: list[str] | None = None) -> Any:
         "fetch": command_fetch,
         "domestic-ingest": command_domestic_ingest,
         "build-features": command_build_features,
+        "compact-data": command_compact_data,
         "infer-faults": command_infer_faults,
         "transfer-functions": command_transfer_functions,
         "stress": command_stress,
@@ -216,6 +232,11 @@ def _run_typer() -> bool:
     @app.command("build-features")
     def build_features_cmd(config: str = typer.Option(...), verbose: bool = False) -> None:
         command_build_features(config, verbose=verbose)
+
+
+    @app.command("compact-data")
+    def compact_data_cmd(config: str = typer.Option(...), verbose: bool = False) -> None:
+        command_compact_data(config, verbose=verbose)
 
     @app.command("infer-faults")
     def infer_faults_cmd(config: str = typer.Option(...), verbose: bool = False) -> None:

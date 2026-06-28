@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 import sqlite3
 import sys
 from collections.abc import Iterable
@@ -41,12 +42,12 @@ def _activate_source_duckdb(paths: ProjectPaths) -> bool:
 
 
 def duckdb_available(paths: ProjectPaths | None = None) -> bool:
-    # Avoid importing the binary wheel in .deps: it aborts this Python runtime.
-    # We only try DuckDB when the source-built isolated directory is present.
-    if paths is None:
-        return any(Path(entry).name == ".deps-duckdb-src" for entry in sys.path)
-    if not _activate_source_duckdb(paths):
-        return False
+    if paths is not None:
+        # Prefer an explicitly source-built DuckDB when present. On some local
+        # noexec mounts binary wheels cannot be loaded, but H200/RunPod venvs
+        # normally can use the installed wheel. Import failure is caught below
+        # and falls back to SQLite.
+        _activate_source_duckdb(paths)
     try:
         import duckdb  # type: ignore  # noqa: F401
     except Exception:
@@ -63,12 +64,28 @@ def database_available() -> bool:
     return True
 
 
+def _duckdb_thread_count() -> int:
+    for name in ("CRUST_LITE_DUCKDB_THREADS", "CRUST_LITE_CPU_THREADS"):
+        raw = os.environ.get(name)
+        if raw:
+            try:
+                return max(1, int(raw))
+            except ValueError:
+                pass
+    return max(1, os.cpu_count() or 1)
+
+
 def connect(paths: ProjectPaths) -> Any:
     paths.data_processed.mkdir(parents=True, exist_ok=True)
     if duckdb_available(paths):
         import duckdb  # type: ignore
 
-        return duckdb.connect(str(duckdb_database_path(paths)))
+        con = duckdb.connect(str(duckdb_database_path(paths)))
+        con.execute(f"PRAGMA threads={_duckdb_thread_count()}")
+        memory_limit = os.environ.get("CRUST_LITE_DUCKDB_MEMORY_LIMIT")
+        if memory_limit:
+            con.execute(f"PRAGMA memory_limit='{memory_limit}'")
+        return con
     con = sqlite3.connect(sqlite_database_path(paths))
     con.row_factory = sqlite3.Row
     return con
@@ -176,11 +193,16 @@ def _materialize_file_duckdb(paths: ProjectPaths, table_name: str, path: Path, m
     try:
         fmt = str(meta.get("physical_format", ""))
         literal = _sql_string(path)
-        if fmt in {"csv_fallback", "sqlite_csv_export"} or path.suffix == ".csv":
+        if fmt in {"csv_fallback", "sqlite_csv_export"} or (not fmt and path.suffix == ".csv"):
             expr = f"read_csv_auto({literal}, header=true)"
         else:
             expr = f"read_parquet({literal})"
-        con.execute(f"CREATE OR REPLACE TABLE {_ident(table_name)} AS SELECT * FROM {expr}")
+        try:
+            con.execute(f"CREATE OR REPLACE TABLE {_ident(table_name)} AS SELECT * FROM {expr}")
+        except Exception as exc:
+            if "Need at least one non-root column" in str(exc):
+                return False
+            raise
     finally:
         con.close()
     return True
@@ -288,6 +310,9 @@ def materialize_known_tables(paths: ProjectPaths) -> dict[str, str]:
         "waveform_feature": paths.data_processed / "waveform_feature.parquet",
         "data_quality_epoch": paths.data_processed / "data_quality_epoch.parquet",
         "historical_data_profile": paths.data_processed / "historical_data_profile.parquet",
+        "event_compact": paths.data_processed / "event_compact.parquet",
+        "event_bin_summary": paths.data_processed / "event_bin_summary.parquet",
+        "gnss_compact": paths.data_processed / "gnss_compact.parquet",
         "waveform_spectrum": paths.data_processed / "waveform_spectrum.parquet",
         "site_transfer_function": paths.data_processed / "site_transfer_function.parquet",
         "transfer_validation": paths.data_processed / "transfer_validation.parquet",

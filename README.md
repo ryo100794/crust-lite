@@ -78,6 +78,34 @@ outputs under `/workspace/equake`. Nothing is installed into the system Python
 environment. When bringing results back to another machine, copy only
 `/workspace/equake/crust-lite/outputs/` unless code or staged data also changed.
 
+### CPU Preprocessing for H200 Runs
+
+Use one CPU-side command to finish public catalog collection, local/registry data ingestion, QC, feature extraction, historical quality profiling, granularity normalization, compact Parquet output, and DuckDB materialization before using the H200 node:
+
+```bash
+cd /workspace/equake/crust-lite
+bash scripts/h200_prepare.sh --config configs/east_japan_usgs.yml
+```
+
+By default, missing configured public USGS catalog CSV data are fetched. Use `--refresh-usgs` to refetch the public catalog, or `--no-fetch` to require pre-staged files. Restricted domestic sources such as GEONET, F-net, K-NET/KiK-net, and some J-SHIS products are represented by the domestic ingest registry and local import contracts unless credentials/local archives are configured.
+
+The CPU preparation command writes compact analysis tables and a DuckDB database:
+
+- `data/processed/event_compact.parquet`
+- `data/processed/event_bin_summary.parquet`
+- `data/processed/gnss_compact.parquet`
+- `data/processed/data_compaction_manifest.json`
+- `data/processed/crust_lite.duckdb`
+- `outputs/reports/data_compaction.md`
+
+Then run the H200 stage without repeating data collection or CPU preprocessing:
+
+```bash
+bash scripts/h200_run.sh --config configs/east_japan_usgs.yml
+```
+
+That stage runs `infer-faults`, `stress`, `simulate`, `export`, and `viz-3d` against the prepared data products. Use `--full` only when intentionally rerunning the complete pipeline on the H200 node.
+
 The code also has minimal fallbacks so the artificial sample pipeline can run
 without the full geospatial stack. In that mode, files with `.parquet` and
 `.gpkg` extensions may contain CSV or GeoJSON fallback content and include
