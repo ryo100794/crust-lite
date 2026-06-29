@@ -23,6 +23,7 @@ from crust_lite.io.parquet import read_sidecar, read_table, write_sidecar, write
 from crust_lite.logging import get_logger
 from crust_lite.paths import ProjectPaths
 from crust_lite.processing.transfer_function import estimate_transfer_functions
+from crust_lite.viz.japan_outline import local_context_outlines
 
 LOGGER = get_logger(__name__)
 
@@ -971,7 +972,114 @@ def _hex_color(row: dict[str, Any], alpha_scale: float = 1.0) -> str:
     return f"rgb({r},{g},{b})"
 
 
-def _ellipsoid_mesh(row: dict[str, Any], vertical_exaggeration: float, n_theta: int = 10, n_phi: int = 6) -> tuple[list[float], list[float], list[float], list[int], list[int], list[int]]:
+def _point_in_polygon(x: float, y: float, polygon: list[tuple[float, float]]) -> bool:
+    inside = False
+    j = len(polygon) - 1
+    for i, (xi, yi) in enumerate(polygon):
+        xj, yj = polygon[j]
+        if ((yi > y) != (yj > y)) and (x < (xj - xi) * (y - yi) / max(yj - yi, 1e-12) + xi):
+            inside = not inside
+        j = i
+    return inside
+
+
+def _synthetic_relief_m(lon: float, lat: float, is_land: bool) -> float:
+    """Lightweight context relief used when no DEM is bundled with the run.
+
+    The surface is cartographic context only. It keeps land above sea level and
+    offshore areas slightly below zero so splats can be inspected against a
+    recognizable terrain-like reference without loading a large DEM into HTML.
+    """
+    ridge = 850.0 * math.exp(-((lon - 138.0) / 3.8) ** 2 - ((lat - 36.7) / 2.5) ** 2)
+    northeast = 420.0 * math.exp(-((lon - 140.6) / 2.6) ** 2 - ((lat - 39.3) / 2.2) ** 2)
+    southwest = 360.0 * math.exp(-((lon - 131.2) / 2.7) ** 2 - ((lat - 33.0) / 1.8) ** 2)
+    roughness = 120.0 * math.sin(lon * 1.7) * math.cos(lat * 1.3)
+    if is_land:
+        return max(20.0, ridge + northeast + southwest + roughness)
+    trench = -900.0 * math.exp(-((lon - 143.5) / 2.6) ** 2 - ((lat - 38.2) / 4.4) ** 2)
+    ocean = -120.0 - 180.0 * max(0.0, lon - 137.0) / 18.0
+    return min(-20.0, ocean + trench)
+
+
+def _terrain_overlay_traces(go: Any, config: AppConfig) -> list[Any]:
+    projector = LocalProjector(config.region)
+    outlines = local_context_outlines(config.region.bbox, margin_deg=3.0)
+    min_lon, min_lat, max_lon, max_lat = config.region.bbox
+    nx = 96
+    ny = 80
+    lons = [min_lon + (max_lon - min_lon) * i / (nx - 1) for i in range(nx)]
+    lats = [min_lat + (max_lat - min_lat) * j / (ny - 1) for j in range(ny)]
+    x_grid: list[list[float]] = []
+    y_grid: list[list[float]] = []
+    z_grid: list[list[float]] = []
+    color_grid: list[list[float]] = []
+    polygons = [outline["coordinates"] for outline in outlines if len(outline["coordinates"]) >= 3]
+    for lat in lats:
+        x_row: list[float] = []
+        y_row: list[float] = []
+        z_row: list[float] = []
+        color_row: list[float] = []
+        for lon in lons:
+            x_m, y_m = projector.lonlat_to_xy(lon, lat)
+            is_land = any(_point_in_polygon(lon, lat, polygon) for polygon in polygons)
+            relief = _synthetic_relief_m(lon, lat, is_land)
+            x_row.append(x_m)
+            y_row.append(y_m)
+            z_row.append(relief)
+            color_row.append(relief)
+        x_grid.append(x_row)
+        y_grid.append(y_row)
+        z_grid.append(z_row)
+        color_grid.append(color_row)
+
+    hover = (
+        "terrain overlay<br>"
+        "source=offline synthetic context relief<br>"
+        "not analytical DEM; z is display elevation [m]"
+    )
+    terrain = go.Surface(
+        x=x_grid,
+        y=y_grid,
+        z=z_grid,
+        surfacecolor=color_grid,
+        colorscale=[
+            [0.00, "#0b4f71"],
+            [0.32, "#3a8fb7"],
+            [0.38, "#b7d7bf"],
+            [0.62, "#628c4f"],
+            [0.82, "#9a7b4f"],
+            [1.00, "#f3efe2"],
+        ],
+        cmin=-1200,
+        cmax=1800,
+        opacity=0.44,
+        showscale=True,
+        colorbar={"title": "terrain display elevation [m]"},
+        name="terrain overlay",
+        text=[[hover for _lon in lons] for _lat in lats],
+        hoverinfo="text",
+    )
+
+    outline_traces: list[Any] = []
+    for outline in outlines:
+        coords = outline["coordinates"]
+        projected = [projector.lonlat_to_xy(lon, lat) for lon, lat in coords]
+        outline_traces.append(
+            go.Scatter3d(
+                x=[x for x, _y in projected],
+                y=[y for _x, y in projected],
+                z=[180.0] * len(projected),
+                mode="lines",
+                line={"color": "#16351f", "width": 5},
+                name=f"Japan terrain outline - {outline['name']}",
+                text=[f"Japan outline<br>island={outline['name']}<br>terrain overlay context"] * len(projected),
+                hoverinfo="text",
+            )
+        )
+    return [terrain, *outline_traces]
+
+
+def _ellipsoid_mesh(row: dict[str, Any], vertical_exaggeration: float, n_theta: int = 18, n_phi: int = 10) -> tuple[list[float], list[float], list[float], list[int], list[int], list[int]]:
     cx = float(row.get("x_m", 0.0) or 0.0)
     cy = float(row.get("y_m", 0.0) or 0.0)
     cz = -1.0 * float(row.get("z_m", 0.0) or 0.0) * vertical_exaggeration
@@ -1014,7 +1122,7 @@ def _write_splat_preview(config: AppConfig, paths: ProjectPaths, rows: list[dict
         limit_rows,
         key=lambda row: (float(row.get("beam_power", 0.0) or 0.0), float(row.get("amplitude", 0.0) or 0.0)),
         reverse=True,
-    )[: min(160, len(limit_rows))]
+    )[: min(360, len(limit_rows))]
     z_values = [
         -1.0 * float(row.get("z_m", 0.0) or 0.0) * config.visualization_3d.vertical_exaggeration
         for row in limit_rows
@@ -1035,7 +1143,8 @@ def _write_splat_preview(config: AppConfig, paths: ProjectPaths, rows: list[dict
         ]
         for row in limit_rows
     ]
-    traces: list[Any] = [
+    traces: list[Any] = [*_terrain_overlay_traces(go, config)]
+    traces.append(
         go.Scatter3d(
             x=[float(row.get("x_m", 0.0) or 0.0) for row in limit_rows],
             y=[float(row.get("y_m", 0.0) or 0.0) for row in limit_rows],
@@ -1060,7 +1169,7 @@ def _write_splat_preview(config: AppConfig, paths: ProjectPaths, rows: list[dict
             ),
             name="splat centers",
         )
-    ]
+    )
     line_x: list[float | None] = []
     line_y: list[float | None] = []
     line_z: list[float | None] = []
@@ -1115,10 +1224,10 @@ def _write_splat_preview(config: AppConfig, paths: ProjectPaths, rows: list[dict
     fig.update_layout(
         title=(
             "Waveform array projection Gaussian primitives "
-            f"(top {len(ellipsoid_rows)} rendered as ellipsoids; vertical exaggeration {config.visualization_3d.vertical_exaggeration:g}x; "
+            f"(high-resolution terrain overlay; top {len(ellipsoid_rows)} rendered as ellipsoids; vertical exaggeration {config.visualization_3d.vertical_exaggeration:g}x; "
             f"is_sample_data={str(is_sample).lower()})"
         ),
-        height=860,
+        height=1120,
         autosize=True,
         uirevision="crust-lite-camera",
         scene={
@@ -1131,7 +1240,7 @@ def _write_splat_preview(config: AppConfig, paths: ProjectPaths, rows: list[dict
         },
         annotations=[
             {
-                "text": "Ellipsoids are display kernels from array-projection sigma, not earthquake source volumes. Lines connect catalog hypocenters to projected coherent-energy centers.",
+                "text": "Terrain is a lightweight display overlay, not an analytical DEM. Ellipsoids are resolution kernels from array-projection sigma. Lines connect catalog hypocenters to projected coherent-energy centers.",
                 "xref": "paper",
                 "yref": "paper",
                 "x": 0.0,
@@ -1162,7 +1271,10 @@ def _write_splat_preview(config: AppConfig, paths: ProjectPaths, rows: list[dict
                 "uses_group_delay": config.waveform_array.use_group_delay,
                 "primitive_type_counts": _count_values(rows, "primitive_type"),
                 "path_family_counts": _count_values(rows, "path_family"),
-                "rendering": "splat centers plus top translucent ellipsoid kernels; includes direct, reflected, scattered, and residual late-phase primitives",
+                "terrain_overlay": "synthetic_context_surface_with_japan_outline",
+                "terrain_grid": {"nx": 96, "ny": 80},
+                "ellipsoid_mesh_resolution": {"n_theta": 18, "n_phi": 10},
+                "rendering": "high-resolution splat centers plus top translucent ellipsoid kernels over a lightweight terrain context surface; includes direct, reflected, scattered, and residual late-phase primitives",
             },
             indent=2,
             sort_keys=True,
