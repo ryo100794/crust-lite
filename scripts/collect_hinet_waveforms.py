@@ -128,14 +128,74 @@ def _append(path: Path, rows: list[dict[str, Any]], fields: list[str]) -> None:
         writer.writerows(rows)
 
 
-def _download_hinet_window(client: Any, event: dict[str, Any], outdir: Path, code: str, minutes: int, pre_seconds: int) -> list[Path]:
+def _existing_keys(path: Path) -> set[tuple[str, str, str, float]]:
+    """Return existing spectrum keys so repeated authenticated runs are resumable."""
+    if not path.exists() or path.stat().st_size == 0:
+        return set()
+    keys: set[tuple[str, str, str, float]] = set()
+    with path.open("r", encoding="utf-8", newline="") as fh:
+        for row in csv.DictReader(fh):
+            try:
+                keys.add((str(row["event_id"]), str(row["station_id"]), str(row.get("channel", "")), float(row["frequency_hz"])))
+            except Exception:
+                pass
+    return keys
+
+
+def _parse_station_groups(value: str) -> list[list[str]]:
+    """Parse semicolon-separated station groups, each with comma/colon stations."""
+    groups: list[list[str]] = []
+    for raw_group in value.split(";"):
+        names = [item.strip() for item in raw_group.replace(":", ",").split(",") if item.strip()]
+        if names:
+            groups.append(names)
+    return groups
+
+
+def _group_label(stations: list[str] | None) -> str:
+    if not stations:
+        return "all"
+    cleaned = [name.replace(".", "_").replace("/", "_") for name in stations]
+    return "stations_" + "_".join(cleaned[:6])
+
+
+def _prepend_tool_path(path_value: str) -> None:
+    """Use workspace-local Hi-net conversion tools without touching system PATH."""
+    if not path_value:
+        return
+    path = Path(path_value).expanduser()
+    if path.exists():
+        os.environ["PATH"] = str(path.resolve()) + os.pathsep + os.environ.get("PATH", "")
+
+
+def _select_stations(client: Any, code: str, stations: list[str] | None) -> None:
+    """Select a small station subset; all stations are used when stations is None."""
+    payload = {
+        "net": code,
+        "stcds": ":".join(stations) if stations else None,
+        "mode": "1",
+    }
+    client.session.post(client._CONT_SELECT, data=payload, timeout=client.timeout)
+
+
+def _download_hinet_window(
+    client: Any,
+    event: dict[str, Any],
+    outdir: Path,
+    code: str,
+    minutes: int,
+    pre_seconds: int,
+    time_offset_hours: float,
+    threads: int,
+) -> list[Path]:
     """Download one event-centered continuous window from Hi-net."""
     outdir.mkdir(parents=True, exist_ok=True)
-    start = event["_time"] - timedelta(seconds=pre_seconds)
-    # HinetPy accepts YYYYMMDDHHMM; span is minutes in the public examples.
+    # Catalogs are stored as UTC. Hi-net continuous waveform requests use local
+    # Japan time in the web UI, so the default offset is +9 hours.
+    start = event["_time"] + timedelta(hours=time_offset_hours) - timedelta(seconds=pre_seconds)
     start_text = start.strftime("%Y%m%d%H%M")
     before = set(outdir.glob("**/*"))
-    result = client.get_continuous_waveform(code, start_text, minutes, outdir=str(outdir))
+    result = client.get_continuous_waveform(code, start_text, minutes, outdir=str(outdir), threads=threads)
     after = [path for path in outdir.glob("**/*") if path.is_file() and path not in before]
     if isinstance(result, tuple):
         for item in result:
@@ -295,21 +355,34 @@ def _feature(data: np.ndarray, sampling_rate: float, trace: Any, path: Path, eve
 
 def collect(args: argparse.Namespace) -> dict[str, Any]:
     """Run authenticated collection with resumable append-only outputs."""
+    _prepend_tool_path(args.tool_path)
     user, password = _credentials(Path(args.env_file) if args.env_file else None)
     try:
         from HinetPy import Client  # type: ignore
     except Exception as exc:
         raise RuntimeError("HinetPy is required. Install it in the project .venv with: python -m pip install HinetPy") from exc
-    client = Client(user, password)
+    client = Client(
+        user,
+        password,
+        timeout=args.timeout_s,
+        retries=args.retries,
+        sleep_time_in_seconds=args.sleep_time_s,
+        max_sleep_count=args.max_sleep_count,
+    )
     config_path = Path(args.config)
     event_csv = Path(args.event_csv) if args.event_csv else _event_csv_from_config(config_path)
     events = _read_events(event_csv, args.min_magnitude, args.max_events)
     spectra_output = Path(args.output)
     feature_output = Path(args.feature_output)
     raw_root = Path(args.raw_dir)
+    existing = _existing_keys(spectra_output)
+    station_groups = _parse_station_groups(args.stations)
+    if not station_groups:
+        station_groups = [None]  # type: ignore[list-item]
     totals: dict[str, Any] = {
         "events_considered": len(events),
         "events_with_raw_download": 0,
+        "station_group_requests": 0,
         "sac_trace_count": 0,
         "spectra_rows": 0,
         "feature_rows": 0,
@@ -317,38 +390,71 @@ def collect(args: argparse.Namespace) -> dict[str, Any]:
     }
     for index, event in enumerate(events, start=1):
         event_dir = raw_root / str(event["_time"].year) / str(event["event_id"])
-        raw_dir = event_dir / "raw"
-        sac_dir = event_dir / "sac"
-        try:
-            files = _download_hinet_window(client, event, raw_dir, args.network_code, args.minutes, args.pre_seconds)
-            if files:
-                totals["events_with_raw_download"] += 1
-            sac_files = _extract_sac_with_hinetpy(files, sac_dir)
-            if not sac_files:
-                sac_files = _maybe_convert_with_win2sac(raw_dir, sac_dir, args.win2sac_command)
-        except Exception as exc:
-            if len(totals["failures"]) < args.max_failures_recorded:
-                totals["failures"].append({"event_id": event.get("event_id"), "stage": "download_or_extract", "error": f"{type(exc).__name__}: {exc}"})
-            continue
-        if args.max_traces_per_event > 0:
-            sac_files = sac_files[: args.max_traces_per_event]
-        for sac in sac_files:
+        event_had_files = False
+        for stations in station_groups:
+            label = _group_label(stations)
+            raw_dir = event_dir / label / "raw"
+            sac_dir = event_dir / label / "sac"
             try:
-                trace, data, sampling_rate = _prepare_trace(sac)
-                source = f"NIED Hi-net authenticated archive; raw_dir={raw_dir}; sac={sac}"
-                spectra_rows = _spectra(data, sampling_rate, trace, sac, event, source)
-                feature_row = _feature(data, sampling_rate, trace, sac, event, source)
+                _select_stations(client, args.network_code, stations)
+                totals["station_group_requests"] += 1
+                files = _download_hinet_window(
+                    client,
+                    event,
+                    raw_dir,
+                    args.network_code,
+                    args.minutes,
+                    args.pre_seconds,
+                    args.time_offset_hours,
+                    args.threads,
+                )
+                if files:
+                    event_had_files = True
+                sac_files = _extract_sac_with_hinetpy(files, sac_dir)
+                if not sac_files:
+                    sac_files = _maybe_convert_with_win2sac(raw_dir, sac_dir, args.win2sac_command)
             except Exception as exc:
                 if len(totals["failures"]) < args.max_failures_recorded:
-                    totals["failures"].append({"event_id": event.get("event_id"), "stage": "spectra", "file": str(sac), "error": f"{type(exc).__name__}: {exc}"})
+                    totals["failures"].append(
+                        {
+                            "event_id": event.get("event_id"),
+                            "stage": "download_or_extract",
+                            "station_group": stations,
+                            "error": f"{type(exc).__name__}: {exc}",
+                        }
+                    )
                 continue
-            _append(spectra_output, spectra_rows, SPECTRA_FIELDS)
-            _append(feature_output, [feature_row], FEATURE_FIELDS)
-            totals["sac_trace_count"] += 1
-            totals["spectra_rows"] += len(spectra_rows)
-            totals["feature_rows"] += 1
+            if args.max_traces_per_event > 0:
+                sac_files = sac_files[: args.max_traces_per_event]
+            for sac in sac_files:
+                try:
+                    trace, data, sampling_rate = _prepare_trace(sac)
+                    source = f"NIED authenticated archive; network={args.network_code}; station_group={label}; raw_dir={raw_dir}; sac={sac}"
+                    spectra_rows = _spectra(data, sampling_rate, trace, sac, event, source)
+                    spectra_rows = [
+                        row for row in spectra_rows
+                        if (str(row["event_id"]), str(row["station_id"]), str(row["channel"]), float(row["frequency_hz"])) not in existing
+                    ]
+                    if not spectra_rows:
+                        continue
+                    feature_row = _feature(data, sampling_rate, trace, sac, event, source)
+                except Exception as exc:
+                    if len(totals["failures"]) < args.max_failures_recorded:
+                        totals["failures"].append({"event_id": event.get("event_id"), "stage": "spectra", "file": str(sac), "error": f"{type(exc).__name__}: {exc}"})
+                    continue
+                _append(spectra_output, spectra_rows, SPECTRA_FIELDS)
+                _append(feature_output, [feature_row], FEATURE_FIELDS)
+                for row in spectra_rows:
+                    existing.add((str(row["event_id"]), str(row["station_id"]), str(row["channel"]), float(row["frequency_hz"])))
+                totals["sac_trace_count"] += 1
+                totals["spectra_rows"] += len(spectra_rows)
+                totals["feature_rows"] += 1
+                if args.max_total_traces > 0 and totals["sac_trace_count"] >= args.max_total_traces:
+                    break
             if args.max_total_traces > 0 and totals["sac_trace_count"] >= args.max_total_traces:
                 break
+        if event_had_files:
+            totals["events_with_raw_download"] += 1
         print(f"event {index}/{len(events)} id={event.get('event_id')} traces={totals['sac_trace_count']} spectra_rows={totals['spectra_rows']}", flush=True)
         if args.max_total_traces > 0 and totals["sac_trace_count"] >= args.max_total_traces:
             break
@@ -360,8 +466,11 @@ def collect(args: argparse.Namespace) -> dict[str, Any]:
         "feature_output": str(feature_output),
         "raw_dir": str(raw_root),
         "network_code": args.network_code,
+        "stations": args.stations,
         "minutes": args.minutes,
         "pre_seconds": args.pre_seconds,
+        "time_offset_hours": args.time_offset_hours,
+        "tool_path": args.tool_path,
         "min_magnitude": args.min_magnitude,
         "max_events": args.max_events,
         "representation": "Hi-net waveform windows converted to phase-preserving complex spectra",
@@ -385,10 +494,18 @@ def main() -> None:
     parser.add_argument("--min-magnitude", type=float, default=5.5)
     parser.add_argument("--max-events", type=int, default=100)
     parser.add_argument("--network-code", default="0101")
+    parser.add_argument("--stations", default="", help="Semicolon-separated station groups; each group uses comma or colon-separated station names.")
     parser.add_argument("--minutes", type=int, default=15)
     parser.add_argument("--pre-seconds", type=int, default=60)
+    parser.add_argument("--time-offset-hours", type=float, default=9.0, help="Offset from UTC catalog time to Hi-net request time; Japan local time is +9.")
     parser.add_argument("--max-traces-per-event", type=int, default=200)
     parser.add_argument("--max-total-traces", type=int, default=5000)
+    parser.add_argument("--tool-path", default=".deps/hinet-win32tools/bin")
+    parser.add_argument("--threads", type=int, default=1)
+    parser.add_argument("--timeout-s", type=float, default=60.0)
+    parser.add_argument("--retries", type=int, default=2)
+    parser.add_argument("--sleep-time-s", type=float, default=5.0)
+    parser.add_argument("--max-sleep-count", type=int, default=30)
     parser.add_argument("--win2sac-command", default="")
     parser.add_argument("--max-failures-recorded", type=int, default=200)
     args = parser.parse_args()
