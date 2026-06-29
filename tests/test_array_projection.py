@@ -60,7 +60,13 @@ def test_sample_waveform_array_projection_outputs() -> None:
         "source_event_z_m",
     }.issubset(splats[0])
     assert paths.outputs_3d.joinpath("gaussian_splat_primitives.ply").exists()
-    assert paths.outputs_3d.joinpath("array_projection_splats.html").exists()
+    html = paths.outputs_3d.joinpath("array_projection_splats.html")
+    assert html.exists()
+    html_text = html.read_text(encoding="utf-8")
+    assert "webgl2_gaussian_point_sprite" in html_text
+    assert "getContext('webgl2'" in html_text
+    webgl_meta = paths.outputs_3d.joinpath("array_projection_splats.metadata.json").read_text(encoding="utf-8")
+    assert "webgl_synthetic_context_surface_with_high_density_japan_outline" in webgl_meta
     meta = read_sidecar(paths.data_processed / "waveform_array_projection.parquet")
     assert meta["synthetic_aperture_enabled"] is True
     assert meta["uses_phase"] is True
