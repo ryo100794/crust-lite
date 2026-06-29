@@ -65,7 +65,7 @@ visualization_3d:
   html_standalone: true
   include_plotlyjs: true
   time_bin_days: 30
-  mode: cumulative
+  mode: window
   max_events: 20000
   max_fault_segments: 1000
   max_frames: 300

@@ -477,19 +477,28 @@ def _map_overlay_traces(go: Any, cfg: AppConfig) -> list[Any]:
 def _layout(title: str, sliders: list[dict[str, Any]] | None = None, updatemenus: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     return {
         "title": title,
+        "height": 860,
+        "autosize": True,
+        "uirevision": "crust-lite-camera",
+        "transition": {"duration": 0},
         "scene": {
             "xaxis_title": "Easting in local CRS [m]",
             "yaxis_title": "Northing in local CRS [m]",
             "zaxis_title": "Elevation-like depth display [m], depth exaggerated",
+            "uirevision": "crust-lite-camera",
+            "aspectmode": "data",
+            "dragmode": "orbit",
         },
         "legend": {"orientation": "h"},
         "sliders": sliders or [],
         "updatemenus": updatemenus or [],
-        "margin": {"l": 0, "r": 0, "b": 0, "t": 48},
+        "margin": {"l": 0, "r": 0, "b": 0, "t": 42},
     }
 
 
 def _animation_controls(labels: list[str]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    frame_opts = {"duration": 0, "redraw": True}
+    transition_opts = {"duration": 0}
     sliders = [
         {
             "active": 0,
@@ -498,7 +507,7 @@ def _animation_controls(labels: list[str]) -> tuple[list[dict[str, Any]], list[d
                 {
                     "label": label,
                     "method": "animate",
-                    "args": [[label], {"mode": "immediate", "frame": {"duration": 0, "redraw": True}}],
+                    "args": [[label], {"mode": "immediate", "frame": frame_opts, "transition": transition_opts}],
                 }
                 for label in labels
             ],
@@ -512,12 +521,12 @@ def _animation_controls(labels: list[str]) -> tuple[list[dict[str, Any]], list[d
                 {
                     "label": "再生",
                     "method": "animate",
-                    "args": [None, {"frame": {"duration": 350, "redraw": True}, "fromcurrent": True}],
+                    "args": [None, {"frame": {"duration": 350, "redraw": True}, "transition": transition_opts, "fromcurrent": True}],
                 },
                 {
                     "label": "一時停止",
                     "method": "animate",
-                    "args": [[None], {"mode": "immediate", "frame": {"duration": 0, "redraw": False}}],
+                    "args": [[None], {"mode": "immediate", "frame": frame_opts, "transition": transition_opts}],
                 },
             ],
         }
@@ -543,10 +552,20 @@ def write_events_faults_3d(cfg: AppConfig, paths: ProjectPaths, metadata: dict[s
         selected_events, time_bin_days or cfg.visualization_3d.time_bin_days, cfg.visualization_3d.max_frames
     )
     display_mode = mode or cfg.visualization_3d.mode
-    traces = []
-    for idx, label in enumerate(labels):
-        initial_visible = idx == 0
-        traces.append(_event_trace(go, bins[label], cfg, f"events {label}", initial_visible))
+
+    sorted_labels = list(labels)
+    event_rows_by_label: dict[str, list[dict[str, Any]]] = {}
+    cumulative_rows: list[dict[str, Any]] = []
+    for label in sorted_labels:
+        current = bins[label]
+        if display_mode == "cumulative":
+            cumulative_rows = [*cumulative_rows, *current]
+            event_rows_by_label[label] = list(cumulative_rows)
+        else:
+            event_rows_by_label[label] = list(current)
+
+    initial_label = sorted_labels[0] if sorted_labels else "no_events"
+    traces = [_event_trace(go, event_rows_by_label.get(initial_label, []), cfg, "events (animated)", True)]
     known = read_features(paths.data_processed / "fault_segment.gpkg") if (
         paths.data_processed / "fault_segment.gpkg"
     ).exists() else []
@@ -574,22 +593,28 @@ def write_events_faults_3d(cfg: AppConfig, paths: ProjectPaths, metadata: dict[s
         )
     traces.extend(_gnss_traces(go, cfg, paths))
     traces.extend(_map_overlay_traces(go, cfg))
-    frames = []
-    event_trace_count = len(labels)
-    for idx, label in enumerate(labels):
-        trace_visibility: list[bool] = []
-        for trace_idx in range(len(traces)):
-            if trace_idx < event_trace_count:
-                trace_visibility.append(trace_idx <= idx if display_mode == "cumulative" else trace_idx == idx)
-            else:
-                trace_visibility.append(True)
-        frame_data = [
-            {"type": getattr(trace, "type", "scatter3d"), "visible": value}
-            for trace, value in zip(traces, trace_visibility, strict=False)
-        ]
-        frames.append(go.Frame(name=label, data=frame_data, traces=list(range(len(traces)))))
-    sliders, buttons = _animation_controls(labels)
+
+    frames = [
+        go.Frame(name=label, data=[_event_trace(go, event_rows_by_label.get(label, []), cfg, "events (animated)", True)], traces=[0])
+        for label in sorted_labels
+    ]
+    sliders, buttons = _animation_controls(sorted_labels)
     fig = go.Figure(data=traces, frames=frames, layout=_layout("Events, known faults, inferred faults", sliders, buttons))
+    fig.update_layout(
+        annotations=[
+            {
+                "text": f"animation_mode={display_mode}; one animated event trace is replaced each frame, so old frames do not remain as residue.",
+                "xref": "paper",
+                "yref": "paper",
+                "x": 0.01,
+                "y": 0.98,
+                "showarrow": False,
+                "align": "left",
+                "bgcolor": "rgba(255,255,255,0.86)",
+                "bordercolor": "#cbd5e1",
+            }
+        ]
+    )
     _write_figure(out, fig, "Events and faults 3D time series", cfg, metadata)
     metadata.update(
         {
@@ -597,13 +622,14 @@ def write_events_faults_3d(cfg: AppConfig, paths: ProjectPaths, metadata: dict[s
             "displayed_event_count": len(selected_events),
             "original_fault_count": len(known) + len(inferred),
             "displayed_fault_count": len(faults),
-            "original_frame_count": max(1, len(labels)),
-            "displayed_frame_count": len(labels),
+            "original_frame_count": max(1, len(sorted_labels)),
+            "displayed_frame_count": len(sorted_labels),
             "actual_time_bin_days": actual_bin,
             "decimation_method": ", ".join(sorted({event_decimation, frame_decimation, fault_decimation})),
+            "animation_frame_strategy": "single_event_trace_replaced_per_frame",
+            "camera_persistence": "layout.uirevision=crust-lite-camera",
         }
     )
-
 
 def write_stress_3d(cfg: AppConfig, paths: ProjectPaths, metadata: dict[str, Any]) -> None:
     go = _load_plotly()

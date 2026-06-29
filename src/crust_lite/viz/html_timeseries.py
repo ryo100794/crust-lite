@@ -25,10 +25,13 @@ def wrap_plotly_html(title: str, body_html: str, metadata: dict[str, Any]) -> st
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{html.escape(title)}</title>
   <style>
-    body {{ font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; color: #1f2933; }}
-    header {{ padding: 16px 20px; border-bottom: 1px solid #d9e2ec; background: #f8fafc; }}
-    main {{ padding: 12px; }}
-    .notice {{ font-weight: 600; color: #7c2d12; margin-top: 8px; }}
+    html, body {{ width: 100%; min-height: 100%; }}
+    body {{ font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; color: #1f2933; background: #ffffff; }}
+    header {{ padding: 10px 16px; border-bottom: 1px solid #d9e2ec; background: #f8fafc; }}
+    header h1 {{ font-size: 20px; margin: 0 0 6px; }}
+    main {{ padding: 0; min-height: calc(100vh - 104px); }}
+    main .plotly-graph-div {{ width: 100% !important; height: calc(100vh - 118px) !important; min-height: 760px; }}
+    .notice {{ font-weight: 600; color: #7c2d12; margin-top: 4px; }}
     .meta {{ font-size: 12px; color: #52606d; white-space: pre-wrap; margin: 12px 20px 24px; }}
     a {{ color: #0b5cad; }}
   </style>

@@ -36,6 +36,11 @@ def test_sample_waveform_array_projection_outputs() -> None:
         "slowness_y_s_per_km",
         "projection_x_m",
         "projection_y_m",
+        "projection_z_m",
+        "primitive_type",
+        "path_family",
+        "late_phase_delay_s",
+        "excess_path_km",
     }.issubset(projection[0])
     assert {
         "sigma_x_m",
@@ -46,6 +51,13 @@ def test_sample_waveform_array_projection_outputs() -> None:
         "array_coherence",
         "aperture_km",
         "dominant_source",
+        "primitive_type",
+        "path_family",
+        "late_phase_delay_s",
+        "excess_path_km",
+        "source_event_x_m",
+        "source_event_y_m",
+        "source_event_z_m",
     }.issubset(splats[0])
     assert paths.outputs_3d.joinpath("gaussian_splat_primitives.ply").exists()
     assert paths.outputs_3d.joinpath("array_projection_splats.html").exists()
@@ -54,3 +66,4 @@ def test_sample_waveform_array_projection_outputs() -> None:
     assert meta["uses_phase"] is True
     assert meta["uses_group_delay"] is True
     assert meta["not_prediction"] is True
+    assert "direct" in meta["projection_type_counts"]

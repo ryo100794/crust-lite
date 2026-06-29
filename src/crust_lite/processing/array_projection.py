@@ -41,6 +41,13 @@ PROJECTION_COLUMNS = [
     "projection_x_m",
     "projection_y_m",
     "projection_z_m",
+    "path_family",
+    "primitive_type",
+    "late_phase_delay_s",
+    "excess_path_km",
+    "residual_spread_s",
+    "positive_residual_fraction",
+    "scatter_weight",
     "frequency_hz",
     "beam_energy",
     "phase_coherence",
@@ -71,6 +78,16 @@ SPLAT_COLUMNS = [
     "x_m",
     "y_m",
     "z_m",
+    "source_event_x_m",
+    "source_event_y_m",
+    "source_event_z_m",
+    "primitive_type",
+    "path_family",
+    "late_phase_delay_s",
+    "excess_path_km",
+    "residual_spread_s",
+    "positive_residual_fraction",
+    "scatter_weight",
     "sigma_x_m",
     "sigma_y_m",
     "sigma_z_m",
@@ -361,6 +378,157 @@ def _score_candidate(
     return clamp01(energy), clamp01(phase_coherence), clamp01(delay_fit), phase_result if math.isfinite(phase_result) else 0.0
 
 
+def _relative_delay_terms(
+    stations: list[dict[str, float]],
+    gx: float,
+    gy: float,
+    velocity_m_s: float,
+) -> tuple[list[float], list[float], list[float]]:
+    distances = [math.hypot(float(st["x_m"]) - gx, float(st["y_m"]) - gy) for st in stations]
+    reference_distance = median(distances)
+    predicted = [(dist - reference_distance) / velocity_m_s for dist in distances]
+    observed_delay = [float(st["group_delay_s"]) for st in stations]
+    delay_reference = median(observed_delay)
+    observed_delay_rel = [value - delay_reference for value in observed_delay]
+    weights = [max(float(st["amplitude"]), 1e-30) for st in stations]
+    max_weight = max(weights or [1.0])
+    weights = [0.25 + 0.75 * (weight / max_weight) for weight in weights]
+    return predicted, observed_delay_rel, weights
+
+
+def _weighted_median(values: list[tuple[float, float]]) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values, key=lambda item: item[0])
+    half = 0.5 * sum(max(weight, 0.0) for _value, weight in ordered)
+    acc = 0.0
+    for value, weight in ordered:
+        acc += max(weight, 0.0)
+        if acc >= half:
+            return value
+    return ordered[-1][0]
+
+
+def _late_phase_metrics(
+    stations: list[dict[str, float]],
+    gx: float,
+    gy: float,
+    frequency_hz: float,
+    velocity_m_s: float,
+    delay_sigma_s: float,
+    use_phase: bool,
+) -> tuple[float, float, float, float, float, float]:
+    """Score coherent late energy after removing the direct-arrival trend.
+
+    The result is a relative reflection/scattering indicator. It is not a
+    solved reflector location or a migrated seismic image.
+    """
+    predicted, observed_delay_rel, weights = _relative_delay_terms(stations, gx, gy, velocity_m_s)
+    residuals = [obs - pred for obs, pred in zip(observed_delay_rel, predicted, strict=False)]
+    positive_threshold = max(0.05, 0.5 * delay_sigma_s)
+    positive = [
+        (residual, weight)
+        for residual, weight in zip(residuals, weights, strict=False)
+        if residual > positive_threshold
+    ]
+    total_weight = max(sum(weights), 1e-12)
+    positive_weight = sum(weight for _residual, weight in positive)
+    positive_fraction = clamp01(positive_weight / total_weight)
+    if len(positive) < 2 or positive_fraction < 0.20:
+        return 0.0, 0.0, 0.0, 0.0, positive_fraction, 0.0
+
+    late_delay_s = max(positive_threshold, min(30.0, _weighted_median(positive)))
+    window_s = max(0.25, 2.0 * delay_sigma_s)
+    weighted_fits = [
+        math.exp(-0.5 * ((residual - late_delay_s) / window_s) ** 2) * weight
+        for residual, weight in zip(residuals, weights, strict=False)
+        if residual > 0.0
+    ]
+    late_fit = clamp01(sum(weighted_fits) / total_weight)
+
+    late_phase = 0.5
+    phase_result = 0.0
+    if use_phase:
+        plus: list[tuple[float, float]] = []
+        minus: list[tuple[float, float]] = []
+        for st, pred, weight in zip(stations, predicted, weights, strict=False):
+            shift = 2.0 * math.pi * frequency_hz * (pred + late_delay_s)
+            phase = float(st["phase_rad"])
+            plus.append((_wrap_phase(phase - shift), weight))
+            minus.append((_wrap_phase(phase + shift), weight))
+        plus_score, plus_phase = _phase_result(plus)
+        minus_score, minus_phase = _phase_result(minus)
+        if plus_score >= minus_score:
+            late_phase = plus_score
+            phase_result = plus_phase
+        else:
+            late_phase = minus_score
+            phase_result = minus_phase
+
+    mean_positive = sum(residual * weight for residual, weight in positive) / max(positive_weight, 1e-12)
+    spread_s = math.sqrt(
+        sum(((residual - mean_positive) ** 2) * weight for residual, weight in positive) / max(positive_weight, 1e-12)
+    )
+    energy = clamp01((0.55 * late_phase + 0.45 * late_fit) * (0.35 + 0.65 * positive_fraction))
+    return energy, late_phase, late_delay_s, spread_s, positive_fraction, phase_result
+
+
+def _late_path_family(late_energy: float, spread_s: float, delay_sigma_s: float, positive_fraction: float) -> tuple[str, str]:
+    if late_energy >= 0.35 and positive_fraction >= 0.45 and spread_s <= max(1.0, 4.0 * delay_sigma_s):
+        return "late_phase_reflection", "reflected"
+    if late_energy >= 0.22:
+        return "late_phase_scattering", "scattered"
+    return "late_phase_residual", "residual"
+
+
+def _late_projection_depth_m(event_z_m: float, late_delay_s: float, velocity_km_s: float, max_depth_km: float) -> float:
+    # Single-bounce reflection is approximated as half the extra path length;
+    # scattering/conversion can deviate, so this is stored as an indicator.
+    extra_path_m = max(0.0, late_delay_s * velocity_km_s * 1000.0)
+    max_depth_m = max(1_000.0, max_depth_km * 1000.0)
+    return min(max_depth_m, max(0.0, event_z_m + 0.5 * extra_path_m))
+
+
+def _projection_sort_key(row: dict[str, Any]) -> tuple[float, float]:
+    return float(row.get("beam_power", 0.0) or 0.0), float(row.get("beam_energy", 0.0) or 0.0)
+
+
+def _select_projection_rows(candidates: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+    if limit <= 0:
+        return []
+    direct = sorted(
+        [row for row in candidates if row.get("primitive_type") == "direct"],
+        key=_projection_sort_key,
+        reverse=True,
+    )
+    late = sorted(
+        [row for row in candidates if row.get("primitive_type") != "direct"],
+        key=_projection_sort_key,
+        reverse=True,
+    )
+    if not late:
+        return direct[:limit]
+    direct_quota = max(1, min(len(direct), limit // 2))
+    late_quota = max(1, limit - direct_quota)
+    selected = [*direct[:direct_quota], *late[:late_quota]]
+    selected_ids = {id(row) for row in selected}
+    if len(selected) < limit:
+        for row in sorted(candidates, key=_projection_sort_key, reverse=True):
+            if id(row) not in selected_ids:
+                selected.append(row)
+                selected_ids.add(id(row))
+                if len(selected) >= limit:
+                    break
+    return sorted(selected, key=_projection_sort_key, reverse=True)[:limit]
+
+
+def _count_values(rows: list[dict[str, Any]], key: str) -> dict[str, int]:
+    counts: dict[str, int] = defaultdict(int)
+    for row in rows:
+        counts[str(row.get(key, "unknown"))] += 1
+    return dict(sorted(counts.items()))
+
+
 def build_waveform_array_projection(
     config: AppConfig,
     paths: ProjectPaths,
@@ -478,6 +646,13 @@ def build_waveform_array_projection(
                         "projection_x_m": gx,
                         "projection_y_m": gy,
                         "projection_z_m": z_m,
+                        "path_family": "direct",
+                        "primitive_type": "direct",
+                        "late_phase_delay_s": 0.0,
+                        "excess_path_km": 0.0,
+                        "residual_spread_s": 0.0,
+                        "positive_residual_fraction": 0.0,
+                        "scatter_weight": 0.0,
                         "frequency_hz": freq,
                         "beam_energy": clamp01(energy * source_weight),
                         "phase_coherence": phase_coherence,
@@ -500,8 +675,75 @@ def build_waveform_array_projection(
                         "is_sample_data": is_sample,
                     }
                 )
-        event_candidates.sort(key=lambda row: (float(row.get("beam_power", 0.0) or 0.0), float(row["beam_energy"])), reverse=True)
-        for rank, row in enumerate(event_candidates[: config.waveform_array.top_projections_per_event], start=1):
+                if config.waveform_array.synthetic_aperture_enabled and config.waveform_array.use_group_delay:
+                    late_energy, late_phase, late_delay_s, spread_s, positive_fraction, late_phase_result = _late_phase_metrics(
+                        stations,
+                        gx,
+                        gy,
+                        freq,
+                        velocity_m_s,
+                        config.waveform_array.delay_sigma_s,
+                        config.waveform_array.use_phase,
+                    )
+                    if late_energy >= 0.08:
+                        path_family, primitive_type = _late_path_family(
+                            late_energy, spread_s, config.waveform_array.delay_sigma_s, positive_fraction
+                        )
+                        late_z_m = _late_projection_depth_m(
+                            z_m,
+                            late_delay_s,
+                            config.waveform_array.velocity_km_s,
+                            config.filters.max_depth_km,
+                        )
+                        excess_path_km = max(0.0, late_delay_s * config.waveform_array.velocity_km_s)
+                        late_sigma = max(
+                            splat_sigma_m,
+                            min(config.waveform_array.resolution_sigma_max_m, splat_sigma_m + 0.25 * excess_path_km * 1000.0),
+                        )
+                        event_candidates.append(
+                            {
+                                "event_id": event_id,
+                                "time_utc": time_utc,
+                                "time_bin_index": time_bin_index,
+                                "time_bin_start_utc": time_bin_start,
+                                "magnitude": float(event.get("magnitude", 0.0) or 0.0),
+                                "depth_km": depth_km,
+                                "x_m": event_x,
+                                "y_m": event_y,
+                                "z_m": z_m,
+                                "projection_x_m": gx,
+                                "projection_y_m": gy,
+                                "projection_z_m": late_z_m,
+                                "path_family": path_family,
+                                "primitive_type": primitive_type,
+                                "late_phase_delay_s": late_delay_s,
+                                "excess_path_km": excess_path_km,
+                                "residual_spread_s": spread_s,
+                                "positive_residual_fraction": positive_fraction,
+                                "scatter_weight": clamp01(late_energy * positive_fraction),
+                                "frequency_hz": freq,
+                                "beam_energy": clamp01(late_energy * source_weight),
+                                "phase_coherence": late_phase,
+                                "delay_fit": clamp01(1.0 / (1.0 + spread_s / max(config.waveform_array.delay_sigma_s, 1e-9))),
+                                "array_coherence": clamp01(late_phase * (0.5 + 0.5 * positive_fraction)),
+                                "beam_power": late_energy * math.log1p(len(stations)) * source_weight * 0.9,
+                                "mean_amplitude_log": mean_amp,
+                                "n_stations": len(stations),
+                                "aperture_km": aperture_km,
+                                "velocity_km_s": config.waveform_array.velocity_km_s,
+                                "velocity_model": velocity_model,
+                                "slowness_x_s_per_km": slowness_x,
+                                "slowness_y_s_per_km": slowness_y,
+                                "frequency_band": f"{freq:g} Hz late-phase window",
+                                "phase_resultant_rad": late_phase_result,
+                                "gaussian_splat_sigma_m": late_sigma,
+                                "dominant_source": dominant_source,
+                                "projection_rank": 0,
+                                "projection_method": "synthetic_aperture_late_phase_reflection_scattering_projection",
+                                "is_sample_data": is_sample,
+                            }
+                        )
+        for rank, row in enumerate(_select_projection_rows(event_candidates, config.waveform_array.top_projections_per_event), start=1):
             row["projection_rank"] = rank
             projection_rows.append(row)
             if len(projection_rows) >= config.waveform_array.max_projection_rows:
@@ -515,10 +757,12 @@ def build_waveform_array_projection(
         {
             "is_sample_data": is_sample,
             "source_path": source_note,
-            "method": "synthetic-aperture delay-and-sum array projection using phase and group delay",
-            "interpretation": "relative coherent array energy image, not an earthquake prediction or unique subsurface inversion",
+            "method": "synthetic-aperture direct plus late-phase reflection/scattering projection using phase and group delay",
+            "interpretation": "relative coherent array energy image including direct, reflected, scattered, and residual late-phase indicators; not an earthquake prediction or unique subsurface inversion",
             "event_count_with_spectra": len(allowed_events),
             "projection_rows": len(projection_rows),
+            "projection_type_counts": _count_values(projection_rows, "primitive_type"),
+            "path_family_counts": _count_values(projection_rows, "path_family"),
             "synthetic_aperture_enabled": config.waveform_array.synthetic_aperture_enabled,
             "resolution_sigma_min_m": config.waveform_array.resolution_sigma_min_m,
             "resolution_sigma_max_m": config.waveform_array.resolution_sigma_max_m,
@@ -535,8 +779,10 @@ def build_waveform_array_projection(
             "is_sample_data": is_sample,
             "source_path": str(projection_path),
             "method": "gaussian_splat_primitives_from_array_projection",
-            "interpretation": "rendering primitives for relative waveform-derived structure indicators; not a deterministic subsurface model",
+            "interpretation": "rendering primitives for relative waveform-derived direct and late-phase structure indicators; not a deterministic subsurface model",
             "splat_rows": len(splat_rows),
+            "primitive_type_counts": _count_values(splat_rows, "primitive_type"),
+            "path_family_counts": _count_values(splat_rows, "path_family"),
         },
     )
     materialize_file(paths, "gaussian_splat_primitive", splat_path)
@@ -551,10 +797,13 @@ def build_waveform_array_projection(
         "projection_rows": len(projection_rows),
         "splat_rows": len(splat_rows),
         "projection_method": (
-            "synthetic_aperture_delay_sum_phase_group_delay_projection"
+            "synthetic_aperture_direct_late_phase_reflection_scattering_projection"
             if config.waveform_array.synthetic_aperture_enabled
             else "delay_and_sum_phase_group_delay_projection"
         ),
+        "projection_type_counts": _count_values(projection_rows, "primitive_type"),
+        "path_family_counts": _count_values(projection_rows, "path_family"),
+        "splat_type_counts": _count_values(splat_rows, "primitive_type"),
         "synthetic_aperture_enabled": config.waveform_array.synthetic_aperture_enabled,
         "resolution_sigma_min_m": config.waveform_array.resolution_sigma_min_m,
         "resolution_sigma_max_m": config.waveform_array.resolution_sigma_max_m,
@@ -603,7 +852,8 @@ def _build_splats(config: AppConfig, projection_rows: list[dict[str, Any]], is_s
             float(config.waveform_array.splat_sigma_vertical_m),
             min(float(config.waveform_array.resolution_sigma_max_m), 0.6 * sigma_xy),
         )
-        color_r, color_g, color_b = _energy_rgb(amplitude)
+        primitive_type = str(row.get("primitive_type", "direct") or "direct")
+        color_r, color_g, color_b = _primitive_rgb(amplitude, primitive_type)
         splats.append(
             {
                 "primitive_id": f"gs_{idx:08d}",
@@ -613,6 +863,16 @@ def _build_splats(config: AppConfig, projection_rows: list[dict[str, Any]], is_s
                 "x_m": row.get("projection_x_m", row.get("x_m", 0.0)),
                 "y_m": row.get("projection_y_m", row.get("y_m", 0.0)),
                 "z_m": row.get("projection_z_m", row.get("z_m", 0.0)),
+                "source_event_x_m": row.get("x_m", 0.0),
+                "source_event_y_m": row.get("y_m", 0.0),
+                "source_event_z_m": row.get("z_m", 0.0),
+                "primitive_type": primitive_type,
+                "path_family": row.get("path_family", "direct"),
+                "late_phase_delay_s": row.get("late_phase_delay_s", 0.0),
+                "excess_path_km": row.get("excess_path_km", 0.0),
+                "residual_spread_s": row.get("residual_spread_s", 0.0),
+                "positive_residual_fraction": row.get("positive_residual_fraction", 0.0),
+                "scatter_weight": row.get("scatter_weight", 0.0),
                 "sigma_x_m": sigma_xy,
                 "sigma_y_m": sigma_xy,
                 "sigma_z_m": sigma_z,
@@ -646,6 +906,17 @@ def _energy_rgb(value: float) -> tuple[int, int, int]:
     g = int(90 + 110 * (1.0 - abs(v - 0.5) * 2.0))
     b = int(230 - 190 * v)
     return r, max(0, min(255, g)), max(0, min(255, b))
+
+
+def _primitive_rgb(value: float, primitive_type: str) -> tuple[int, int, int]:
+    v = clamp01(value)
+    if primitive_type == "reflected":
+        return int(210 + 45 * v), int(100 + 80 * v), int(20 + 70 * (1.0 - v))
+    if primitive_type == "scattered":
+        return int(125 + 95 * v), int(60 + 80 * (1.0 - v)), int(190 + 45 * v)
+    if primitive_type == "residual":
+        return int(90 + 120 * v), int(90 + 110 * v), int(90 + 80 * v)
+    return _energy_rgb(value)
 
 
 def _write_splat_ply(path: Path, rows: list[dict[str, Any]]) -> None:
@@ -693,6 +964,45 @@ def _write_splat_ply(path: Path, rows: list[dict[str, Any]]) -> None:
     write_sidecar(path, {"row_count": len(rows), "format": "ascii_ply_gaussian_splat_primitives"})
 
 
+def _hex_color(row: dict[str, Any], alpha_scale: float = 1.0) -> str:
+    r = max(0, min(255, int(row.get("color_r", 180) or 180)))
+    g = max(0, min(255, int(row.get("color_g", 120) or 120)))
+    b = max(0, min(255, int(row.get("color_b", 80) or 80)))
+    return f"rgb({r},{g},{b})"
+
+
+def _ellipsoid_mesh(row: dict[str, Any], vertical_exaggeration: float, n_theta: int = 10, n_phi: int = 6) -> tuple[list[float], list[float], list[float], list[int], list[int], list[int]]:
+    cx = float(row.get("x_m", 0.0) or 0.0)
+    cy = float(row.get("y_m", 0.0) or 0.0)
+    cz = -1.0 * float(row.get("z_m", 0.0) or 0.0) * vertical_exaggeration
+    sx = max(float(row.get("sigma_x_m", 0.0) or 0.0), 1.0)
+    sy = max(float(row.get("sigma_y_m", 0.0) or 0.0), 1.0)
+    sz = max(float(row.get("sigma_z_m", 0.0) or 0.0) * vertical_exaggeration, 1.0)
+    xs: list[float] = []
+    ys: list[float] = []
+    zs: list[float] = []
+    for ip in range(n_phi + 1):
+        phi = -0.5 * math.pi + math.pi * ip / n_phi
+        for it in range(n_theta):
+            theta = 2.0 * math.pi * it / n_theta
+            xs.append(cx + sx * math.cos(phi) * math.cos(theta))
+            ys.append(cy + sy * math.cos(phi) * math.sin(theta))
+            zs.append(cz + sz * math.sin(phi))
+    ii: list[int] = []
+    jj: list[int] = []
+    kk: list[int] = []
+    for ip in range(n_phi):
+        for it in range(n_theta):
+            a = ip * n_theta + it
+            b = ip * n_theta + (it + 1) % n_theta
+            c = (ip + 1) * n_theta + it
+            d = (ip + 1) * n_theta + (it + 1) % n_theta
+            ii.extend([a, b])
+            jj.extend([b, d])
+            kk.extend([c, c])
+    return xs, ys, zs, ii, jj, kk
+
+
 def _write_splat_preview(config: AppConfig, paths: ProjectPaths, rows: list[dict[str, Any]], is_sample: bool) -> None:
     try:
         import plotly.graph_objects as go  # type: ignore
@@ -700,6 +1010,11 @@ def _write_splat_preview(config: AppConfig, paths: ProjectPaths, rows: list[dict
         return
     paths.outputs_3d.mkdir(parents=True, exist_ok=True)
     limit_rows = rows[: min(len(rows), 20000)]
+    ellipsoid_rows = sorted(
+        limit_rows,
+        key=lambda row: (float(row.get("beam_power", 0.0) or 0.0), float(row.get("amplitude", 0.0) or 0.0)),
+        reverse=True,
+    )[: min(160, len(limit_rows))]
     z_values = [
         -1.0 * float(row.get("z_m", 0.0) or 0.0) * config.visualization_3d.vertical_exaggeration
         for row in limit_rows
@@ -720,54 +1035,114 @@ def _write_splat_preview(config: AppConfig, paths: ProjectPaths, rows: list[dict
         ]
         for row in limit_rows
     ]
-    fig = go.Figure(
-        data=[
-            go.Scatter3d(
-                x=[float(row.get("x_m", 0.0) or 0.0) for row in limit_rows],
-                y=[float(row.get("y_m", 0.0) or 0.0) for row in limit_rows],
-                z=z_values,
-                mode="markers",
-                marker={
-                    "size": [max(2.0, 10.0 * float(row.get("amplitude", 0.0) or 0.0)) for row in limit_rows],
-                    "color": colors,
-                    "colorscale": "Turbo",
-                    "colorbar": {"title": "coherent energy [-]"},
-                    "opacity": 0.65,
-                },
-                customdata=customdata,
-                hovertemplate=(
-                    "primitive=%{customdata[0]}<br>event=%{customdata[1]}<br>"
-                    "time=%{customdata[2]}<br>frequency=%{customdata[3]} Hz<br>"
-                    "energy=%{customdata[4]:.3f}<br>array_coherence=%{customdata[5]:.3f}<br>"
-                    "aperture=%{customdata[6]:.1f} km<br>sigma=%{customdata[7]:.0f} m<br>"
-                    "source=%{customdata[8]}<br>is_sample_data=%{customdata[9]}<extra></extra>"
-                ),
-                name="Gaussian splat primitives",
-            )
-        ]
+    traces: list[Any] = [
+        go.Scatter3d(
+            x=[float(row.get("x_m", 0.0) or 0.0) for row in limit_rows],
+            y=[float(row.get("y_m", 0.0) or 0.0) for row in limit_rows],
+            z=z_values,
+            mode="markers",
+            marker={
+                "size": [max(2.0, min(18.0, 3.0 + 14.0 * float(row.get("amplitude", 0.0) or 0.0))) for row in limit_rows],
+                "color": colors,
+                "colorscale": "Turbo",
+                "colorbar": {"title": "coherent energy [-]"},
+                "opacity": 0.50,
+            },
+            customdata=customdata,
+            hovertemplate=(
+                "primitive=%{customdata[0]}<br>event=%{customdata[1]}<br>"
+                "time=%{customdata[2]}<br>primitive_type=%{customdata[3]}<br>"
+                "path_family=%{customdata[4]}<br>frequency=%{customdata[5]} Hz<br>"
+                "energy=%{customdata[6]:.3f}<br>array_coherence=%{customdata[7]:.3f}<br>"
+                "late_delay=%{customdata[8]:.2f} s<br>excess_path=%{customdata[9]:.2f} km<br>"
+                "aperture=%{customdata[10]:.1f} km<br>sigma=%{customdata[11]:.0f} m<br>"
+                "source=%{customdata[12]}<br>is_sample_data=%{customdata[13]}<extra></extra>"
+            ),
+            name="splat centers",
+        )
+    ]
+    line_x: list[float | None] = []
+    line_y: list[float | None] = []
+    line_z: list[float | None] = []
+    for row in ellipsoid_rows:
+        sx = float(row.get("source_event_x_m", row.get("x_m", 0.0)) or 0.0)
+        sy = float(row.get("source_event_y_m", row.get("y_m", 0.0)) or 0.0)
+        sz = -1.0 * float(row.get("source_event_z_m", row.get("z_m", 0.0)) or 0.0) * config.visualization_3d.vertical_exaggeration
+        line_x.extend([sx, float(row.get("x_m", 0.0) or 0.0), None])
+        line_y.extend([sy, float(row.get("y_m", 0.0) or 0.0), None])
+        line_z.extend([sz, -1.0 * float(row.get("z_m", 0.0) or 0.0) * config.visualization_3d.vertical_exaggeration, None])
+    traces.append(
+        go.Scatter3d(
+            x=line_x,
+            y=line_y,
+            z=line_z,
+            mode="lines",
+            line={"color": "#334155", "width": 2},
+            name="hypocenter to projected splat",
+            hoverinfo="skip",
+        )
     )
+    for idx, row in enumerate(ellipsoid_rows, start=1):
+        xs, ys, zs, ii, jj, kk = _ellipsoid_mesh(row, config.visualization_3d.vertical_exaggeration)
+        hover = (
+            f"ellipsoid_splat={row.get('primitive_id')}<br>"
+            f"event={row.get('event_id')}<br>"
+            f"sigma_x_m={row.get('sigma_x_m')}<br>"
+            f"sigma_z_m={row.get('sigma_z_m')}<br>"
+            f"primitive_type={row.get('primitive_type')}<br>"
+            f"path_family={row.get('path_family')}<br>"
+            f"late_phase_delay_s={row.get('late_phase_delay_s')}<br>"
+            f"array_coherence={row.get('array_coherence')}<br>"
+            "ellipsoid_is_resolution_kernel=true"
+        )
+        traces.append(
+            go.Mesh3d(
+                x=xs,
+                y=ys,
+                z=zs,
+                i=ii,
+                j=jj,
+                k=kk,
+                color=_hex_color(row),
+                opacity=0.11 + 0.28 * float(row.get("array_coherence", 0.0) or 0.0),
+                name="top Gaussian splat ellipsoids" if idx == 1 else f"splat ellipsoid {idx}",
+                text=[hover] * len(xs),
+                hoverinfo="text",
+                showlegend=idx == 1,
+            )
+        )
+    fig = go.Figure(data=traces)
     fig.update_layout(
         title=(
             "Waveform array projection Gaussian primitives "
-            f"(vertical exaggeration {config.visualization_3d.vertical_exaggeration:g}x; is_sample_data={str(is_sample).lower()})"
+            f"(top {len(ellipsoid_rows)} rendered as ellipsoids; vertical exaggeration {config.visualization_3d.vertical_exaggeration:g}x; "
+            f"is_sample_data={str(is_sample).lower()})"
         ),
+        height=860,
+        autosize=True,
+        uirevision="crust-lite-camera",
         scene={
             "xaxis_title": "Easting in local CRS [m]",
             "yaxis_title": "Northing in local CRS [m]",
             "zaxis_title": "Elevation-like depth display [m], depth exaggerated",
             "aspectmode": "data",
+            "uirevision": "crust-lite-camera",
+            "dragmode": "orbit",
         },
         annotations=[
             {
-                "text": "Research state display from phase/group-delay array projection; not an earthquake forecast.",
+                "text": "Ellipsoids are display kernels from array-projection sigma, not earthquake source volumes. Lines connect catalog hypocenters to projected coherent-energy centers.",
                 "xref": "paper",
                 "yref": "paper",
                 "x": 0.0,
                 "y": 1.07,
                 "showarrow": False,
                 "align": "left",
+                "bgcolor": "rgba(255,255,255,0.86)",
+                "bordercolor": "#cbd5e1",
             }
         ],
+        margin={"l": 0, "r": 0, "b": 0, "t": 54},
     )
     include = True if config.visualization_3d.include_plotlyjs else "cdn"
     out = paths.outputs_3d / "array_projection_splats.html"
@@ -778,12 +1153,16 @@ def _write_splat_preview(config: AppConfig, paths: ProjectPaths, rows: list[dict
             {
                 "html": str(out),
                 "displayed_splats": len(limit_rows),
+                "displayed_ellipsoid_splats": len(ellipsoid_rows),
                 "total_splats": len(rows),
                 "is_sample_data": is_sample,
                 "vertical_exaggeration": config.visualization_3d.vertical_exaggeration,
                 "synthetic_aperture_enabled": config.waveform_array.synthetic_aperture_enabled,
                 "uses_phase": config.waveform_array.use_phase,
                 "uses_group_delay": config.waveform_array.use_group_delay,
+                "primitive_type_counts": _count_values(rows, "primitive_type"),
+                "path_family_counts": _count_values(rows, "path_family"),
+                "rendering": "splat centers plus top translucent ellipsoid kernels; includes direct, reflected, scattered, and residual late-phase primitives",
             },
             indent=2,
             sort_keys=True,
