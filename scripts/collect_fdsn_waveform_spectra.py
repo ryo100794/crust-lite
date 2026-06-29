@@ -250,6 +250,7 @@ def collect(args: argparse.Namespace) -> dict[str, Any]:
     feature_output = Path(args.feature_output)
     raw_dir = Path(args.raw_dir)
     existing = _existing_keys(spectra_output)
+    existing_event_ids = {event_id for event_id, _station_id, _channel, _freq in existing}
     clients = [Client(name.strip()) for name in args.clients.split(",") if name.strip()]
     totals = {
         "events_considered": len(events),
@@ -261,6 +262,9 @@ def collect(args: argparse.Namespace) -> dict[str, Any]:
         "failures": [],
     }
     for event_index, event in enumerate(events, start=1):
+        if args.skip_existing_events and str(event.get("event_id")) in existing_event_ids:
+            print(f"event {event_index}/{len(events)} id={event.get('event_id')} skipped_existing_event trace_count={totals['trace_count']}", flush=True)
+            continue
         event_written = 0
         for client in clients:
             try:
@@ -341,6 +345,7 @@ def collect(args: argparse.Namespace) -> dict[str, Any]:
         "min_magnitude": args.min_magnitude,
         "max_events": args.max_events,
         "max_traces": args.max_traces,
+        "skip_existing_events": args.skip_existing_events,
         "representation": "complex spectra retaining phase_rad and group_delay_s plus raw MiniSEED windows",
         "not_prediction": True,
     }
@@ -373,6 +378,7 @@ def main() -> None:
     parser.add_argument("--freqmax", type=float, default=20.0)
     parser.add_argument("--sleep-s", type=float, default=0.1)
     parser.add_argument("--max-failures-recorded", type=int, default=200)
+    parser.add_argument("--skip-existing-events", action="store_true", help="Skip events that already have any spectra rows in the output CSV.")
     args = parser.parse_args()
     collect(args)
 
