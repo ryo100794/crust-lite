@@ -11,11 +11,13 @@ mkdir -p data/raw/waveforms/combined
 "${CRUST_LITE_VENV}/bin/python" scripts/merge_waveform_csv.py \
   --output data/raw/waveforms/combined/japan_all_2000_2026_m55_spectra.csv \
   --key-columns event_id,station_id,channel,frequency_hz \
+  data/raw/waveforms/fdsn/japan_all_2000_2026_m55_spectra.csv \
   data/raw/waveforms/fdsn/japan_all_2000_2026_m6_spectra.csv \
   data/raw/waveforms/hinet/japan_all_2000_2026_m55_spectra.csv
 
 "${CRUST_LITE_VENV}/bin/python" scripts/merge_waveform_csv.py \
   --output data/raw/waveforms/combined/japan_all_2000_2026_m55_waveform_features.csv \
   --key-columns event_id,station_id,channel \
+  data/raw/waveforms/fdsn/japan_all_2000_2026_m55_waveform_features.csv \
   data/raw/waveforms/fdsn/japan_all_2000_2026_m6_waveform_features.csv \
   data/raw/waveforms/hinet/japan_all_2000_2026_m55_waveform_features.csv
