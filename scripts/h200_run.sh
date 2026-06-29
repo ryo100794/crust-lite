@@ -58,7 +58,7 @@ else
         --config "${config}" | tee "${run_dir}/run_all.log"
     fi
   else
-    for command in infer-faults stress simulate export viz-3d; do
+    for command in array-projection infer-faults stress simulate export viz-3d; do
       "${CRUST_LITE_VENV}/bin/python" -m crust_lite.cli "${command}" \
         --config "${config}" | tee "${run_dir}/${command}.log"
     done

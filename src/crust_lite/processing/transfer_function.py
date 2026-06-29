@@ -18,7 +18,7 @@ from crust_lite.io.database import (
     write_rows_csv_stream,
 )
 from crust_lite.io.geopackage import read_features
-from crust_lite.io.parquet import write_sidecar, write_table
+from crust_lite.io.parquet import read_sidecar, write_sidecar, write_table
 from crust_lite.logging import get_logger
 from crust_lite.paths import ProjectPaths, resolve_input
 from crust_lite.resources import choose_execution_plan
@@ -553,6 +553,7 @@ def estimate_transfer_functions(config: AppConfig, paths: ProjectPaths, sample: 
         "source_path": source_path,
         "method": "relative complex transfer function using amplitude, phase, group delay, and arrival residual proxies",
     }
-    write_sidecar(paths.data_processed / "site_transfer_function.parquet", {**summary, "physical_format": "csv_fallback"})
+    tf_path = paths.data_processed / "site_transfer_function.parquet"
+    write_sidecar(tf_path, {**read_sidecar(tf_path), **summary})
     LOGGER.info("Estimated transfer functions for %d stations using %d spectra rows", len(station_locs), len(spectra_rows))
     return summary

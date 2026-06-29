@@ -29,6 +29,7 @@ from crust_lite.processing.transfer_function import (
     write_empty_transfer_outputs,
 )
 from crust_lite.processing.waveform_features import build_waveform_features
+from crust_lite.processing.array_projection import build_waveform_array_projection
 from crust_lite.report import export_outputs, write_summary
 from crust_lite.viz.dashboard import write_dashboard_stub
 from crust_lite.viz.visualize_3d import generate_3d_visualizations
@@ -96,7 +97,19 @@ def command_transfer_functions(config_path: str, sample: bool = False, verbose: 
     if not sample and not config.data_sources.waveform_spectra_csv:
         LOGGER.info("Skipping transfer functions because waveform_spectra_csv is not configured")
         return write_empty_transfer_outputs(paths, "waveform_spectra_csv_not_configured", is_sample_data=False)
+    if not sample and config.data_sources.waveform_spectra_csv:
+        source_path = Path(config.data_sources.waveform_spectra_csv)
+        if not source_path.is_absolute():
+            source_path = paths.root / source_path
+        if not source_path.exists():
+            LOGGER.warning("Configured waveform spectra CSV is missing; transfer functions are not generated yet: %s", source_path)
+            return write_empty_transfer_outputs(paths, f"waveform_spectra_csv_missing:{source_path}", is_sample_data=False)
     return estimate_transfer_functions(config, paths, sample=sample)
+
+
+def command_array_projection(config_path: str, sample: bool = False, verbose: bool = False) -> dict[str, Any]:
+    config, paths = _context(config_path, verbose)
+    return build_waveform_array_projection(config, paths, sample=sample)
 
 
 def command_stress(config_path: str, verbose: bool = False) -> dict[str, Any]:
@@ -156,6 +169,7 @@ def command_run_all(config_path: str, sample: bool = False, verbose: bool = Fals
     results["domestic_ingest"] = command_domestic_ingest(config_path, verbose=verbose)
     results["build_features"] = command_build_features(config_path, verbose=verbose)
     results["transfer_functions"] = command_transfer_functions(config_path, sample=sample, verbose=verbose)
+    results["array_projection"] = command_array_projection(config_path, sample=sample, verbose=verbose)
     results["infer_faults"] = command_infer_faults(config_path, verbose=verbose)
     results["stress"] = command_stress(config_path, verbose=verbose)
     results["simulate"] = command_simulate(config_path, verbose=verbose)
@@ -177,9 +191,9 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         p.add_argument("--verbose", action="store_true")
         return p
 
-    for name in ["fetch", "domestic-ingest", "build-features", "compact-data", "infer-faults", "transfer-functions", "stress", "simulate", "export", "dashboard"]:
+    for name in ["fetch", "domestic-ingest", "build-features", "compact-data", "infer-faults", "transfer-functions", "array-projection", "stress", "simulate", "export", "dashboard"]:
         p = add_common(name)
-        if name in {"fetch", "transfer-functions"}:
+        if name in {"fetch", "transfer-functions", "array-projection"}:
             p.add_argument("--sample", action="store_true")
     p = add_common("run-all")
     p.add_argument("--sample", action="store_true")
@@ -200,6 +214,7 @@ def _run_argparse(argv: list[str] | None = None) -> Any:
         "compact-data": command_compact_data,
         "infer-faults": command_infer_faults,
         "transfer-functions": command_transfer_functions,
+        "array-projection": command_array_projection,
         "stress": command_stress,
         "simulate": command_simulate,
         "export": command_export,
@@ -247,6 +262,12 @@ def _run_typer() -> bool:
         config: str = typer.Option(...), sample: bool = False, verbose: bool = False
     ) -> None:
         command_transfer_functions(config, sample=sample, verbose=verbose)
+
+    @app.command("array-projection")
+    def array_projection_cmd(
+        config: str = typer.Option(...), sample: bool = False, verbose: bool = False
+    ) -> None:
+        command_array_projection(config, sample=sample, verbose=verbose)
 
     @app.command("stress")
     def stress_cmd(config: str = typer.Option(...), verbose: bool = False) -> None:

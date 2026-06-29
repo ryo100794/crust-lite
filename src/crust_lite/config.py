@@ -59,8 +59,29 @@ class DataSourceConfig:
     gnss_csv: str | None = None
     active_fault_file: str | None = None
     waveform_spectra_csv: str | None = None
+    waveform_feature_csv: str | None = None
 
 
+@dataclass(frozen=True)
+class WaveformArrayConfig:
+    enabled: bool = True
+    time_bin_days: int = 30
+    max_events: int = 2000
+    max_stations_per_event: int = 256
+    min_stations: int = 4
+    projection_grid_km: float = 20.0
+    projection_radius_km: float = 80.0
+    velocity_km_s: float = 3.5
+    delay_sigma_s: float = 0.35
+    top_projections_per_event: int = 4
+    max_projection_rows: int = 100_000
+    splat_sigma_horizontal_m: float = 20_000.0
+    splat_sigma_vertical_m: float = 12_000.0
+    max_splats: int = 100_000
+    use_phase: bool = True
+    use_group_delay: bool = True
+    output_ply: bool = True
+    output_html_preview: bool = True
 
 
 @dataclass(frozen=True)
@@ -122,6 +143,7 @@ class AppConfig:
     resources: ResourceConfig = field(default_factory=ResourceConfig)
     preprocessing: PreprocessingConfig = field(default_factory=PreprocessingConfig)
     visualization_3d: Visualization3DConfig = field(default_factory=Visualization3DConfig)
+    waveform_array: WaveformArrayConfig = field(default_factory=WaveformArrayConfig)
     path: Path | None = None
 
 
@@ -160,6 +182,7 @@ def load_config(path: str | Path) -> AppConfig:
         resources=cfg.resources,
         preprocessing=cfg.preprocessing,
         visualization_3d=cfg.visualization_3d,
+        waveform_array=cfg.waveform_array,
         path=config_path,
     )
 
@@ -173,6 +196,7 @@ def parse_config(raw: dict[str, Any]) -> AppConfig:
     viz_raw = raw.get("visualization_3d", {})
     resources_raw = raw.get("resources", {})
     preprocessing_raw = raw.get("preprocessing", {})
+    waveform_array_raw = raw.get("waveform_array", {})
 
     bbox = _tuple_float(region_raw.get("bbox"), 4, "region.bbox")
     min_lon, min_lat, max_lon, max_lat = bbox
@@ -232,6 +256,22 @@ def parse_config(raw: dict[str, Any]) -> AppConfig:
     if viz.vertical_exaggeration <= 0:
         raise ValueError("visualization_3d.vertical_exaggeration must be positive")
 
+    waveform_array = WaveformArrayConfig(**{**WaveformArrayConfig().__dict__, **waveform_array_raw})
+    if waveform_array.time_bin_days <= 0:
+        raise ValueError("waveform_array.time_bin_days must be positive")
+    if waveform_array.max_events < 0:
+        raise ValueError("waveform_array.max_events must be non-negative")
+    if waveform_array.max_stations_per_event <= 0:
+        raise ValueError("waveform_array.max_stations_per_event must be positive")
+    if waveform_array.min_stations <= 1:
+        raise ValueError("waveform_array.min_stations must be greater than 1")
+    if waveform_array.projection_grid_km <= 0 or waveform_array.projection_radius_km <= 0:
+        raise ValueError("waveform_array projection grid and radius must be positive")
+    if waveform_array.velocity_km_s <= 0:
+        raise ValueError("waveform_array.velocity_km_s must be positive")
+    if waveform_array.delay_sigma_s <= 0:
+        raise ValueError("waveform_array.delay_sigma_s must be positive")
+
     return AppConfig(
         region=RegionConfig(
             name=str(_get(region_raw, "name")),
@@ -264,6 +304,7 @@ def parse_config(raw: dict[str, Any]) -> AppConfig:
         ),
         resources=resources,
         preprocessing=preprocessing,
+        waveform_array=waveform_array,
         data_sources=DataSourceConfig(
             use_fdsn=bool(_get(sources_raw, "use_fdsn")),
             use_jshis=bool(_get(sources_raw, "use_jshis")),
@@ -277,6 +318,7 @@ def parse_config(raw: dict[str, Any]) -> AppConfig:
             gnss_csv=sources_raw.get("gnss_csv"),
             active_fault_file=sources_raw.get("active_fault_file"),
             waveform_spectra_csv=sources_raw.get("waveform_spectra_csv"),
+            waveform_feature_csv=sources_raw.get("waveform_feature_csv"),
         ),
         visualization_3d=viz,
     )

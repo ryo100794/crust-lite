@@ -115,6 +115,9 @@ echo "duckdb_threads=${CRUST_LITE_DUCKDB_THREADS}" | tee -a "${run_dir}/cpu_thre
 "${CRUST_LITE_VENV}/bin/python" -m crust_lite.cli transfer-functions \
   --config "${config}" | tee "${run_dir}/transfer_functions.log"
 
+"${CRUST_LITE_VENV}/bin/python" -m crust_lite.cli array-projection \
+  --config "${config}" | tee "${run_dir}/array_projection.log"
+
 "${CRUST_LITE_VENV}/bin/python" - <<PY | tee "${run_dir}/database_materialize.log"
 from crust_lite.config import load_config
 from crust_lite.io.database import connect, database_engine, database_path, materialize_known_tables
@@ -129,7 +132,7 @@ for name, status in sorted(results.items()):
     print(f"{name}: {status}")
 con = connect(paths)
 try:
-    for table in ["event_compact", "event_bin_summary", "gnss_compact", "domestic_ingest_plan"]:
+    for table in ["event_compact", "event_bin_summary", "gnss_compact", "waveform_array_projection", "gaussian_splat_primitive", "domestic_ingest_plan"]:
         try:
             count = con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
         except Exception as exc:

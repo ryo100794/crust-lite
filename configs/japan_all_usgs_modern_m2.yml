@@ -1,12 +1,12 @@
 region:
-  name: japan_all_usgs_1900_2026_m3_depth700
+  name: japan_all_usgs_2000_2026_m2_depth700
   bbox: [122.0, 20.0, 154.0, 46.5]
   crs_local: EPSG:3857
-  start_date: "1900-01-01"
+  start_date: "2000-01-01"
   end_date: "2026-06-28"
 
 filters:
-  min_magnitude: 3.0
+  min_magnitude: 2.0
   max_depth_km: 700
   mechanism_min_magnitude: 4.0
   max_events_for_waveforms: 5000
@@ -20,7 +20,7 @@ simulation:
   effective_friction_range: [0.2, 0.6]
   cohesion_pa_range: [1.0e6, 1.0e7]
   effective_normal_stress_pa_range: [1.0e7, 1.0e8]
-  random_seed: 46
+  random_seed: 47
 
 outputs:
   write_maps: true
@@ -31,21 +31,21 @@ data_sources:
   use_fdsn: false
   fdsn_client: USGS
   catalog_source: USGS ComCat
-  mechanism_csv: data/raw/usgs/japan_all_1900_2026_m4_mechanisms.csv
-  event_csv: data/raw/usgs/japan_all_1900_2026_m3_depth700_events.csv
+  mechanism_csv: data/raw/usgs/japan_all_2000_2026_m4_mechanisms.csv
+  event_csv: data/raw/usgs/japan_all_2000_2026_m2_depth700_events.csv
   use_jshis: false
   use_gnss: false
   use_active_faults: false
   use_waveforms: true
-  waveform_spectra_csv: data/raw/waveforms/fdsn/japan_all_1900_2026_m6_spectra.csv
-  waveform_feature_csv: data/raw/waveforms/fdsn/japan_all_1900_2026_m6_waveform_features.csv
+  waveform_spectra_csv: data/raw/waveforms/combined/japan_all_2000_2026_m55_spectra.csv
+  waveform_feature_csv: data/raw/waveforms/combined/japan_all_2000_2026_m55_waveform_features.csv
 
 preprocessing:
   compact_enabled: true
   time_bin_days: 30
   spatial_bin_km: 10.0
   depth_bin_km: 10.0
-  magnitude_bin: 0.5
+  magnitude_bin: 0.2
   retain_event_level_compact: true
   materialize_database: true
   prefer_compact_tables: true

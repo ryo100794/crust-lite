@@ -317,6 +317,8 @@ def materialize_known_tables(paths: ProjectPaths) -> dict[str, str]:
         "site_transfer_function": paths.data_processed / "site_transfer_function.parquet",
         "transfer_validation": paths.data_processed / "transfer_validation.parquet",
         "structure_anomaly": paths.data_processed / "structure_anomaly.parquet",
+        "waveform_array_projection": paths.data_processed / "waveform_array_projection.parquet",
+        "gaussian_splat_primitive": paths.data_processed / "gaussian_splat_primitive.parquet",
         "domestic_data_source": paths.data_processed / "domestic_data_source.parquet",
         "domestic_ingest_plan": paths.data_processed / "domestic_ingest_plan.parquet",
         "stress_state": paths.data_processed / "stress_state.parquet",

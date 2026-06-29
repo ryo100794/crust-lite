@@ -38,6 +38,7 @@ dependencies = [
 dev = ["pytest", "ruff", "mypy"]
 stress = ["cutde"]
 waveform = ["pyrocko"]
+domestic-waveform = ["HinetPy"]
 fast-json = ["orjson"]
 
 [project.scripts]

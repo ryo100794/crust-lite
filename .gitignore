@@ -9,6 +9,10 @@ htmlcov/
 .venv_incomplete/
 .deps/
 logs/
+secrets/*
+!secrets/
+!secrets/hinet.env.template
+*.env
 build/
 dist/
 *.egg-info/
@@ -17,6 +21,7 @@ data/raw/waveforms/
 data/raw/usgs/
 data/raw/domestic/
 data/raw/external/
+data/raw/gcmt/
 data/raw/**/*.mseed
 data/raw/**/*.miniseed
 data/interim/*
