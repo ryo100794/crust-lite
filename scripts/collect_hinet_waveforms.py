@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+"""Collect authenticated NIED Hi-net waveform windows.
+
+Credentials are read from an external env file that must stay outside Git.  The
+output schema matches the public FDSN collector so both sources can be merged
+without changing downstream transfer-function or array-projection code.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -65,6 +72,7 @@ def _load_env_file(path: Path) -> None:
 
 
 def _credentials(env_file: Path | None) -> tuple[str, str]:
+    """Load Hi-net credentials without ever printing secret values."""
     if env_file:
         _load_env_file(env_file)
     user = os.environ.get("HINET_USER") or os.environ.get("HINET_USERNAME")
@@ -121,6 +129,7 @@ def _append(path: Path, rows: list[dict[str, Any]], fields: list[str]) -> None:
 
 
 def _download_hinet_window(client: Any, event: dict[str, Any], outdir: Path, code: str, minutes: int, pre_seconds: int) -> list[Path]:
+    """Download one event-centered continuous window from Hi-net."""
     outdir.mkdir(parents=True, exist_ok=True)
     start = event["_time"] - timedelta(seconds=pre_seconds)
     # HinetPy accepts YYYYMMDDHHMM; span is minutes in the public examples.
@@ -218,6 +227,7 @@ def _station_id(trace: Any, path: Path) -> tuple[str, str, str, str, str]:
 
 
 def _spectra(data: np.ndarray, sampling_rate: float, trace: Any, path: Path, event: dict[str, Any], source: str) -> list[dict[str, Any]]:
+    """Convert SAC traces into the shared phase-aware spectrum schema."""
     station_id, network, station, location, channel = _station_id(trace, path)
     window = np.hanning(data.size)
     fft = np.fft.rfft(data * window)
@@ -284,6 +294,7 @@ def _feature(data: np.ndarray, sampling_rate: float, trace: Any, path: Path, eve
 
 
 def collect(args: argparse.Namespace) -> dict[str, Any]:
+    """Run authenticated collection with resumable append-only outputs."""
     user, password = _credentials(Path(args.env_file) if args.env_file else None)
     try:
         from HinetPy import Client  # type: ignore

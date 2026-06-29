@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+"""Collect public FDSN waveform windows and preserve phase-aware spectra.
+
+This script is resumable and writes compact CSV summaries plus MiniSEED cache
+files.  It keeps amplitude, phase, and group delay so later array projection can
+use timing information rather than amplitude-only spectra.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -86,6 +93,7 @@ def _event_csv_from_config(config_path: Path) -> Path:
 
 
 def _existing_keys(path: Path) -> set[tuple[str, str, str, float]]:
+    """Return already collected spectrum keys for resumable downloads."""
     if not path.exists() or path.stat().st_size == 0:
         return set()
     keys: set[tuple[str, str, str, float]] = set()
@@ -109,6 +117,7 @@ def _append_csv(path: Path, rows: list[dict[str, Any]], fieldnames: list[str]) -
 
 
 def _station_candidates(client: Client, event: dict[str, Any], args: argparse.Namespace) -> list[dict[str, Any]]:
+    """Choose nearby stations before requesting waveform payloads."""
     start = UTCDateTime(event["_time"] - timedelta(seconds=args.pre_seconds))
     end = UTCDateTime(event["_time"] + timedelta(seconds=args.duration_seconds))
     inventory = client.get_stations(
@@ -167,6 +176,7 @@ def _prepare_trace(trace: Any) -> tuple[np.ndarray, float]:
 
 
 def _spectrum_rows(data: np.ndarray, sampling_rate: float, event: dict[str, Any], station: dict[str, Any], source: str) -> list[dict[str, Any]]:
+    """Summarize a waveform window without discarding Fourier phase."""
     if data.size < 16:
         return []
     window = np.hanning(data.size)
@@ -232,6 +242,7 @@ def _feature_row(data: np.ndarray, sampling_rate: float, event: dict[str, Any], 
 
 
 def collect(args: argparse.Namespace) -> dict[str, Any]:
+    """Download event windows and append spectra/features in small batches."""
     config_path = Path(args.config)
     event_csv = Path(args.event_csv) if args.event_csv else _event_csv_from_config(config_path)
     events = _read_events(event_csv, args.min_magnitude, args.max_events)

@@ -1,3 +1,10 @@
+"""Command-line orchestration for the crust-lite research pipeline.
+
+The commands are intentionally small wrappers around processing modules so the
+same steps can be run one-by-one on a laptop or chained for cloud/H200
+preparation.  No command emits deterministic earthquake-date predictions.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -164,6 +171,7 @@ def command_dashboard(config_path: str, verbose: bool = False) -> dict[str, Any]
 
 
 def command_run_all(config_path: str, sample: bool = False, verbose: bool = False) -> dict[str, Any]:
+    """Run the complete CPU-first pipeline in dependency order."""
     results: dict[str, Any] = {}
     results["fetch"] = command_fetch(config_path, sample=sample, verbose=verbose)
     results["domestic_ingest"] = command_domestic_ingest(config_path, verbose=verbose)

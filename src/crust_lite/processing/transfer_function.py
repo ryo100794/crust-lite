@@ -1,3 +1,11 @@
+"""Relative site transfer-function estimation from waveform spectra.
+
+The implementation keeps amplitude, phase, and group-delay summaries rather
+than reducing waveforms to amplitude-only spectra.  Outputs are CPU-side
+features for structure-anomaly screening and array projection; this is not a
+full waveform inversion.
+"""
+
 from __future__ import annotations
 
 import csv
@@ -25,6 +33,8 @@ from crust_lite.resources import choose_execution_plan
 
 LOGGER = get_logger(__name__)
 
+# Minimum columns required from external waveform collectors. Keeping the
+# contract small lets public FDSN, Hi-net, and sample data share one pipeline.
 SPECTRA_COLUMNS = {
     "event_id",
     "station_id",
@@ -91,6 +101,7 @@ def _prepare_spectra(config: AppConfig, paths: ProjectPaths, sample: bool = Fals
 
 
 def _fault_distance_km(config: AppConfig, paths: ProjectPaths, lon: float, lat: float) -> tuple[float, str]:
+    """Measure station proximity to known or inferred fault traces."""
     projector = LocalProjector(config.region)
     point = projector.lonlat_to_xy(lon, lat)
     best = float("inf")
@@ -116,6 +127,7 @@ def _fault_distance_km(config: AppConfig, paths: ProjectPaths, lon: float, lat: 
 
 
 def write_empty_transfer_outputs(paths: ProjectPaths, reason: str, is_sample_data: bool = False) -> dict[str, Any]:
+    """Write schema-compatible empty outputs when waveform input is unavailable."""
     metadata = {
         "is_sample_data": is_sample_data,
         "method": "not_generated",
@@ -194,6 +206,8 @@ def _estimate_transfer_functions_db(
     is_sample: bool,
     source_count: int,
 ) -> dict[str, Any]:
+    # DuckDB keeps the high-row-count path in SQL so spectra do not have to be
+    # expanded into a large Python list on memory-constrained machines.
     if database_engine(paths) != "duckdb":
         raise RuntimeError("Large waveform transfer-function estimation requires source-built DuckDB")
     with source_path.open("r", encoding="utf-8", newline="") as fh:
@@ -357,6 +371,7 @@ def _estimate_transfer_functions_db(
 
 
 def estimate_transfer_functions(config: AppConfig, paths: ProjectPaths, sample: bool = False) -> dict[str, Any]:
+    """Estimate transfer functions and validation metrics for one config."""
     spectra_path, is_sample_path = _resolve_spectra_path(config, paths, sample)
     source_count = _count_csv_rows(spectra_path)
     plan = choose_execution_plan(

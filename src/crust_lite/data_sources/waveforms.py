@@ -1,3 +1,11 @@
+"""Waveform feature ingestion.
+
+MVP waveform handling accepts pre-collected feature CSV files so expensive
+download and signal processing can run independently from the main pipeline.
+When no waveform data is configured, schema-compatible empty outputs keep later
+stages deterministic.
+"""
+
 from __future__ import annotations
 
 import csv
@@ -28,6 +36,7 @@ FEATURE_COLUMNS = {
 
 
 def _read_feature_csv(path: Path) -> list[dict[str, Any]]:
+    """Read externally generated waveform features with column validation."""
     with path.open("r", encoding="utf-8", newline="") as fh:
         rows = [dict(row) for row in csv.DictReader(fh)]
     if not rows:
@@ -52,6 +61,7 @@ def _read_feature_csv(path: Path) -> list[dict[str, Any]]:
 
 
 def fetch_waveforms(config: AppConfig, paths: ProjectPaths, sample: bool = False) -> dict[str, object]:
+    """Populate waveform_feature.parquet from sample or configured CSV input."""
     paths.ensure()
     feature_csv = config.data_sources.waveform_feature_csv
     if feature_csv:

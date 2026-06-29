@@ -1,3 +1,11 @@
+"""Phase-aware waveform array projection and Gaussian splat export.
+
+This module converts event-window spectra into a compact geometric
+representation for later GPU-side volumetric experiments.  Phase and group
+delay are kept as first-class inputs so spectra do not discard timing
+information that is needed for array-style triangulation.
+"""
+
 from __future__ import annotations
 
 import json
@@ -18,6 +26,8 @@ from crust_lite.processing.transfer_function import estimate_transfer_functions
 
 LOGGER = get_logger(__name__)
 
+# Keep a narrow schema: these rows are the CPU-prepared handoff to later
+# GPU experiments, so every field should be inexpensive to scan from Parquet.
 PROJECTION_COLUMNS = [
     "event_id",
     "time_utc",
@@ -90,6 +100,7 @@ def _wrap_phase(value: float) -> float:
 
 
 def _phase_result(values: list[tuple[float, float]]) -> tuple[float, float]:
+    """Return circular coherence and mean phase for weighted phase samples."""
     if not values:
         return 0.0, 0.0
     sx = sum(weight * math.cos(phase) for phase, weight in values)
@@ -99,6 +110,7 @@ def _phase_result(values: list[tuple[float, float]]) -> tuple[float, float]:
 
 
 def _candidate_offsets(radius_m: float, grid_m: float) -> list[tuple[float, float]]:
+    """Build a small horizontal search stencil around the catalog hypocenter."""
     steps = int(math.ceil(radius_m / grid_m))
     offsets: list[tuple[float, float]] = []
     for ix in range(-steps, steps + 1):
@@ -135,6 +147,7 @@ def _event_time_index(events: dict[str, dict[str, Any]]) -> dict[str, str]:
 
 
 def _resolve_spectrum_event_id(row: dict[str, Any], events: dict[str, dict[str, Any]], time_index: dict[str, str]) -> str | None:
+    """Match spectra to catalog events, tolerating sources that omit event_id."""
     event_id = str(row.get("event_id", ""))
     if event_id in events:
         return event_id
@@ -164,6 +177,8 @@ def _station_rows(
     projector: LocalProjector,
     max_stations: int,
 ) -> list[dict[str, float]]:
+    # Collapse many frequency samples per station into one robust station row;
+    # the projection grid should be driven by station geometry, not CSV volume.
     by_station: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
         by_station[str(row["station_id"])].append(row)
@@ -210,6 +225,8 @@ def _score_candidate(
     use_phase: bool,
     use_group_delay: bool,
 ) -> tuple[float, float, float, float]:
+    # Delay-and-sum scoring is intentionally approximate here. It ranks likely
+    # horizontal source projections without asserting a solved velocity model.
     distances = [math.hypot(float(st["x_m"]) - gx, float(st["y_m"]) - gy) for st in stations]
     reference_distance = median(distances)
     predicted = [(dist - reference_distance) / velocity_m_s for dist in distances]
@@ -263,6 +280,8 @@ def build_waveform_array_projection(
     paths: ProjectPaths,
     sample: bool = False,
 ) -> dict[str, Any]:
+    # This is the public CPU preprocessing step used before any GPU splatting
+    # work: spectra -> projection candidates -> compact splat primitives.
     paths.ensure()
     projection_path = paths.data_processed / "waveform_array_projection.parquet"
     splat_path = paths.data_processed / "gaussian_splat_primitive.parquet"
@@ -434,6 +453,11 @@ def _write_empty(paths: ProjectPaths, reason: str, is_sample: bool) -> dict[str,
 
 
 def _build_splats(config: AppConfig, projection_rows: list[dict[str, Any]], is_sample: bool) -> list[dict[str, Any]]:
+    """Convert projection rows into Gaussian-splat-like primitives.
+
+    These are not rendered as the final scientific result; they are compact
+    seeds for GPU experiments where multiple 2D projections can be fused.
+    """
     rows = sorted(projection_rows, key=lambda row: float(row.get("beam_energy", 0.0) or 0.0), reverse=True)
     rows = rows[: config.waveform_array.max_splats]
     splats: list[dict[str, Any]] = []
@@ -477,6 +501,7 @@ def _energy_rgb(value: float) -> tuple[int, int, int]:
 
 
 def _write_splat_ply(path: Path, rows: list[dict[str, Any]]) -> None:
+    """Write an ASCII PLY preview that common 3D tools can inspect."""
     path.parent.mkdir(parents=True, exist_ok=True)
     header = [
         "ply",

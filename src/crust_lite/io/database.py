@@ -1,3 +1,11 @@
+"""Database helpers for compact CPU-side data management.
+
+DuckDB is preferred because the pipeline repeatedly scans Parquet/CSV features
+and aggregates large event-stress tables.  SQLite remains a conservative
+fallback, while mesh and stress workflows are structured so large arrays can be
+streamed or queried instead of held entirely in Python memory.
+"""
+
 from __future__ import annotations
 
 import csv
@@ -31,6 +39,7 @@ def _source_duckdb_dir(paths: ProjectPaths) -> Path:
 
 
 def _activate_source_duckdb(paths: ProjectPaths) -> bool:
+    """Prefer a repo-local source build when a wheel is unusable on the host."""
     source = _source_duckdb_dir(paths)
     if not (source / "duckdb").exists() or not any(source.glob("_duckdb*.so")):
         return False
@@ -76,6 +85,7 @@ def _duckdb_thread_count() -> int:
 
 
 def connect(paths: ProjectPaths) -> Any:
+    """Open the project database and apply CPU/memory execution knobs."""
     paths.data_processed.mkdir(parents=True, exist_ok=True)
     if duckdb_available(paths):
         import duckdb  # type: ignore
@@ -169,6 +179,7 @@ def materialize_rows(paths: ProjectPaths, table_name: str, rows: list[dict[str, 
 
 
 def materialize_file(paths: ProjectPaths, table_name: str, path: Path) -> bool:
+    """Expose a processed file as a queryable table without duplicating logic."""
     if not path.exists():
         return False
     engine = database_engine(paths)
@@ -237,6 +248,7 @@ def _materialize_csv_sqlite(paths: ProjectPaths, table_name: str, path: Path, ba
 
 
 def initialize_mesh_schema(paths: ProjectPaths) -> None:
+    """Create normalized mesh tables for large gridded or FEM-adjacent data."""
     con = connect(paths)
     try:
         con.execute(
@@ -300,6 +312,7 @@ def initialize_mesh_schema(paths: ProjectPaths) -> None:
 
 
 def materialize_known_tables(paths: ProjectPaths) -> dict[str, str]:
+    """Register all standard outputs that are present on disk."""
     mapping = {
         "event": paths.data_processed / "event.parquet",
         "event_qc": paths.data_interim / "event_qc.parquet",
@@ -493,6 +506,7 @@ def latest_stress_by_segment(paths: ProjectPaths) -> dict[str, float] | None:
 
 
 def stress_time_bins(paths: ProjectPaths, requested_bin_days: int, max_frames: int) -> tuple[list[str], dict[tuple[str, str], float], str, int]:
+    """Aggregate stress rows into bounded animation frames for 3D HTML."""
     engine = database_engine(paths)
     con = connect(paths)
     try:

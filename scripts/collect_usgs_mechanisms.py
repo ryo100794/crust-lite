@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+"""Best-effort USGS focal-mechanism collector.
+
+The script queries detail products in batches and appends successful mechanism
+rows.  It is deliberately resumable because product coverage is sparse and
+network/API failures should not discard already collected rows.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -24,6 +31,7 @@ def parse_date(value: str) -> date:
 
 
 def request_json(url: str, retries: int = 5) -> dict[str, Any]:
+    """Fetch JSON with bounded retries for public API instability."""
     last_error: Exception | None = None
     for attempt in range(1, retries + 1):
         try:
@@ -121,6 +129,7 @@ def _existing_event_ids(output: Path) -> set[str]:
 
 
 def _append_rows(output: Path, rows: list[dict[str, Any]], fieldnames: list[str]) -> None:
+    # Append-only collection keeps long-running nationwide jobs resumable.
     output.parent.mkdir(parents=True, exist_ok=True)
     write_header = not output.exists() or output.stat().st_size == 0
     with output.open("a", encoding="utf-8", newline="") as fh:

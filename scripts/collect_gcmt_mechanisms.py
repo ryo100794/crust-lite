@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+"""Collect GCMT mechanisms and match them to the local event catalog.
+
+GCMT is used as a nationwide mechanism source when agency-specific mechanism
+CSV files are not yet available.  Matching is by origin time and distance, so
+metadata keeps the source explicit.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -88,6 +95,9 @@ def _match_event(
     center = _time_seconds(origin_time)
     lo = bisect_left(times, center - max_time_s)
     hi = bisect_right(times, center + max_time_s)
+    # A loose time/distance match is sufficient for feature enrichment, but
+    # the GCMT source is preserved so downstream reports do not treat it as a
+    # native catalog field.
     best: tuple[float, str, float, float] | None = None
     for row in rows[lo:hi]:
         distance = _haversine_km(lat, lon, float(row["_lat"]), float(row["_lon"]))

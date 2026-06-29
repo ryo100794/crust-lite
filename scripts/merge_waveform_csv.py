@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+"""Merge waveform CSV outputs from multiple collectors.
+
+Collectors may overlap in event/station/frequency coverage.  This utility
+deduplicates on explicit keys so downstream configs can point to one compact
+combined file.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -8,6 +15,7 @@ from pathlib import Path
 
 
 def merge_csv(inputs: list[Path], output: Path, key_columns: list[str]) -> dict[str, object]:
+    """Merge existing CSVs while preserving the first row for each key."""
     output.parent.mkdir(parents=True, exist_ok=True)
     fieldnames: list[str] = []
     rows: list[dict[str, str]] = []
