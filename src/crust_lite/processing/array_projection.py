@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import math
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from statistics import median
 from typing import Any
@@ -45,10 +45,19 @@ PROJECTION_COLUMNS = [
     "beam_energy",
     "phase_coherence",
     "delay_fit",
+    "array_coherence",
+    "beam_power",
     "mean_amplitude_log",
     "n_stations",
+    "aperture_km",
     "velocity_km_s",
+    "velocity_model",
+    "slowness_x_s_per_km",
+    "slowness_y_s_per_km",
+    "frequency_band",
     "phase_resultant_rad",
+    "gaussian_splat_sigma_m",
+    "dominant_source",
     "projection_rank",
     "projection_method",
     "is_sample_data",
@@ -74,17 +83,25 @@ SPLAT_COLUMNS = [
     "source_projection_rank",
     "source_frequency_hz",
     "source_projection_method",
+    "array_coherence",
+    "beam_power",
+    "aperture_km",
+    "frequency_band",
+    "velocity_model",
+    "slowness_x_s_per_km",
+    "slowness_y_s_per_km",
+    "dominant_source",
     "interpretation",
     "is_sample_data",
 ]
 
 
 def _parse_time(value: str) -> datetime:
-    return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
+    return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC)
 
 
 def _format_time(value: datetime) -> str:
-    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
 def _time_bin(value: str, start: datetime, days: int) -> tuple[int, str]:
@@ -92,7 +109,7 @@ def _time_bin(value: str, start: datetime, days: int) -> tuple[int, str]:
     delta_days = max(0, (current - start).days)
     idx = delta_days // max(1, days)
     bin_start = start.timestamp() + idx * max(1, days) * 86400
-    return int(idx), _format_time(datetime.fromtimestamp(bin_start, timezone.utc))
+    return int(idx), _format_time(datetime.fromtimestamp(bin_start, UTC))
 
 
 def _wrap_phase(value: float) -> float:
@@ -215,6 +232,76 @@ def _station_rows(
     return stations[:max_stations]
 
 
+def _source_family(row: dict[str, Any]) -> str:
+    """Classify spectrum provenance without storing long credential-path strings."""
+    text = " ".join(str(row.get(key, "")) for key in ("source", "network", "station_id", "channel")).lower()
+    if "network=0101" in text or "hi-net" in text or "hinet" in text:
+        return "hinet_0101"
+    if "network=0103a" in text:
+        return "nied_fnet_strong_motion_0103a"
+    if "network=0103" in text or "f-net" in text or "fnet" in text:
+        return "nied_fnet_0103"
+    if "nied" in text:
+        return "nied"
+    if "fdsn" in text or "iris" in text or "earthscope" in text:
+        return "fdsn"
+    return "unknown"
+
+
+def _dominant_source(rows: list[dict[str, Any]]) -> str:
+    counts: dict[str, int] = defaultdict(int)
+    for row in rows:
+        counts[_source_family(row)] += 1
+    if not counts:
+        return "unknown"
+    ordered = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    if len(ordered) == 1:
+        return ordered[0][0]
+    return "mixed:" + ",".join(f"{name}:{count}" for name, count in ordered[:3])
+
+
+def _source_weight(config: AppConfig, dominant_source: str) -> float:
+    if not config.waveform_array.synthetic_aperture_enabled:
+        return 1.0
+    source = dominant_source.lower()
+    if "hinet_0101" in source:
+        return float(config.waveform_array.hinet_source_boost)
+    return 1.0
+
+
+def _station_aperture_km(stations: list[dict[str, float]]) -> float:
+    if len(stations) < 2:
+        return 0.0
+    xs = [float(st["x_m"]) for st in stations]
+    ys = [float(st["y_m"]) for st in stations]
+    return math.hypot(max(xs) - min(xs), max(ys) - min(ys)) / 1000.0
+
+
+def _slowness_vector_s_per_km(event_x: float, event_y: float, gx: float, gy: float, velocity_km_s: float) -> tuple[float, float]:
+    dx_km = (gx - event_x) / 1000.0
+    dy_km = (gy - event_y) / 1000.0
+    distance_km = math.hypot(dx_km, dy_km)
+    if distance_km <= 1e-9:
+        return 0.0, 0.0
+    slowness = 1.0 / max(velocity_km_s, 1e-9)
+    return slowness * dx_km / distance_km, slowness * dy_km / distance_km
+
+
+def _resolution_sigma_m(config: AppConfig, frequency_hz: float, aperture_km: float) -> float:
+    if not config.waveform_array.synthetic_aperture_enabled:
+        return float(config.waveform_array.splat_sigma_horizontal_m)
+    frequency = max(float(frequency_hz), 1e-6)
+    wavelength_m = config.waveform_array.velocity_km_s * 1000.0 / frequency
+    aperture_m = max(float(aperture_km) * 1000.0, 1.0)
+    aperture_gain = max(1.0, aperture_m / max(wavelength_m, 1.0))
+    grid_floor_m = 0.5 * config.waveform_array.projection_grid_km * 1000.0
+    sigma = max(grid_floor_m, 0.5 * wavelength_m / math.sqrt(aperture_gain))
+    return max(
+        float(config.waveform_array.resolution_sigma_min_m),
+        min(float(config.waveform_array.resolution_sigma_max_m), sigma),
+    )
+
+
 def _score_candidate(
     stations: list[dict[str, float]],
     gx: float,
@@ -271,7 +358,6 @@ def _score_candidate(
         energy = delay_fit
     else:
         energy = 0.5
-    mean_amp = sum(float(st["log_amplitude"]) for st in stations) / max(len(stations), 1)
     return clamp01(energy), clamp01(phase_coherence), clamp01(delay_fit), phase_result if math.isfinite(phase_result) else 0.0
 
 
@@ -296,7 +382,7 @@ def build_waveform_array_projection(
     if not events:
         return _write_empty(paths, "event_table_not_available", is_sample)
 
-    start = datetime.combine(config.region.start_date, datetime.min.time(), tzinfo=timezone.utc)
+    start = datetime.combine(config.region.start_date, datetime.min.time(), tzinfo=UTC)
     projector = LocalProjector(config.region)
     by_event_freq: dict[tuple[str, float], list[dict[str, Any]]] = defaultdict(list)
     time_index = _event_time_index(events)
@@ -342,6 +428,17 @@ def build_waveform_array_projection(
             if len(stations) < config.waveform_array.min_stations:
                 continue
             mean_amp = sum(float(st["log_amplitude"]) for st in stations) / len(stations)
+            dominant_source = _dominant_source(rows)
+            source_weight = _source_weight(config, dominant_source)
+            aperture_km = _station_aperture_km(stations)
+            splat_sigma_m = _resolution_sigma_m(config, freq, aperture_km)
+            frequency_band = f"{freq:g} Hz point spectrum"
+            velocity_model = f"homogeneous_{config.waveform_array.velocity_km_s:g}_km_s"
+            method = (
+                "synthetic_aperture_delay_sum_phase_group_delay_projection"
+                if config.waveform_array.synthetic_aperture_enabled
+                else "delay_and_sum_phase_group_delay_projection"
+            )
             for dx, dy in offsets:
                 gx = event_x + dx
                 gy = event_y + dy
@@ -354,6 +451,18 @@ def build_waveform_array_projection(
                     config.waveform_array.delay_sigma_s,
                     config.waveform_array.use_phase,
                     config.waveform_array.use_group_delay,
+                )
+                if config.waveform_array.use_phase and config.waveform_array.use_group_delay:
+                    array_coherence = clamp01(phase_coherence * delay_fit)
+                elif config.waveform_array.use_phase:
+                    array_coherence = clamp01(phase_coherence)
+                elif config.waveform_array.use_group_delay:
+                    array_coherence = clamp01(delay_fit)
+                else:
+                    array_coherence = clamp01(energy)
+                beam_power = max(0.0, energy) * math.log1p(len(stations)) * source_weight
+                slowness_x, slowness_y = _slowness_vector_s_per_km(
+                    event_x, event_y, gx, gy, config.waveform_array.velocity_km_s
                 )
                 event_candidates.append(
                     {
@@ -370,19 +479,28 @@ def build_waveform_array_projection(
                         "projection_y_m": gy,
                         "projection_z_m": z_m,
                         "frequency_hz": freq,
-                        "beam_energy": energy,
+                        "beam_energy": clamp01(energy * source_weight),
                         "phase_coherence": phase_coherence,
                         "delay_fit": delay_fit,
+                        "array_coherence": array_coherence,
+                        "beam_power": beam_power,
                         "mean_amplitude_log": mean_amp,
                         "n_stations": len(stations),
+                        "aperture_km": aperture_km,
                         "velocity_km_s": config.waveform_array.velocity_km_s,
+                        "velocity_model": velocity_model,
+                        "slowness_x_s_per_km": slowness_x,
+                        "slowness_y_s_per_km": slowness_y,
+                        "frequency_band": frequency_band,
                         "phase_resultant_rad": phase_result,
+                        "gaussian_splat_sigma_m": splat_sigma_m,
+                        "dominant_source": dominant_source,
                         "projection_rank": 0,
-                        "projection_method": "delay_and_sum_phase_group_delay_projection",
+                        "projection_method": method,
                         "is_sample_data": is_sample,
                     }
                 )
-        event_candidates.sort(key=lambda row: float(row["beam_energy"]), reverse=True)
+        event_candidates.sort(key=lambda row: (float(row.get("beam_power", 0.0) or 0.0), float(row["beam_energy"])), reverse=True)
         for rank, row in enumerate(event_candidates[: config.waveform_array.top_projections_per_event], start=1):
             row["projection_rank"] = rank
             projection_rows.append(row)
@@ -397,10 +515,14 @@ def build_waveform_array_projection(
         {
             "is_sample_data": is_sample,
             "source_path": source_note,
-            "method": "delay-and-sum array projection using phase and group delay",
+            "method": "synthetic-aperture delay-and-sum array projection using phase and group delay",
             "interpretation": "relative coherent array energy image, not an earthquake prediction or unique subsurface inversion",
             "event_count_with_spectra": len(allowed_events),
             "projection_rows": len(projection_rows),
+            "synthetic_aperture_enabled": config.waveform_array.synthetic_aperture_enabled,
+            "resolution_sigma_min_m": config.waveform_array.resolution_sigma_min_m,
+            "resolution_sigma_max_m": config.waveform_array.resolution_sigma_max_m,
+            "hinet_source_boost": config.waveform_array.hinet_source_boost,
         },
     )
     materialize_file(paths, "waveform_array_projection", projection_path)
@@ -428,7 +550,15 @@ def build_waveform_array_projection(
         "source_path": source_note,
         "projection_rows": len(projection_rows),
         "splat_rows": len(splat_rows),
-        "projection_method": "delay_and_sum_phase_group_delay_projection",
+        "projection_method": (
+            "synthetic_aperture_delay_sum_phase_group_delay_projection"
+            if config.waveform_array.synthetic_aperture_enabled
+            else "delay_and_sum_phase_group_delay_projection"
+        ),
+        "synthetic_aperture_enabled": config.waveform_array.synthetic_aperture_enabled,
+        "resolution_sigma_min_m": config.waveform_array.resolution_sigma_min_m,
+        "resolution_sigma_max_m": config.waveform_array.resolution_sigma_max_m,
+        "hinet_source_boost": config.waveform_array.hinet_source_boost,
         "uses_phase": config.waveform_array.use_phase,
         "uses_group_delay": config.waveform_array.use_group_delay,
         "not_prediction": True,
@@ -458,11 +588,21 @@ def _build_splats(config: AppConfig, projection_rows: list[dict[str, Any]], is_s
     These are not rendered as the final scientific result; they are compact
     seeds for GPU experiments where multiple 2D projections can be fused.
     """
-    rows = sorted(projection_rows, key=lambda row: float(row.get("beam_energy", 0.0) or 0.0), reverse=True)
+    rows = sorted(
+        projection_rows,
+        key=lambda row: (float(row.get("beam_power", 0.0) or 0.0), float(row.get("beam_energy", 0.0) or 0.0)),
+        reverse=True,
+    )
     rows = rows[: config.waveform_array.max_splats]
     splats: list[dict[str, Any]] = []
     for idx, row in enumerate(rows, start=1):
         amplitude = clamp01(float(row.get("beam_energy", 0.0) or 0.0))
+        array_coherence = clamp01(float(row.get("array_coherence", amplitude) or 0.0))
+        sigma_xy = float(row.get("gaussian_splat_sigma_m", config.waveform_array.splat_sigma_horizontal_m) or 0.0)
+        sigma_z = max(
+            float(config.waveform_array.splat_sigma_vertical_m),
+            min(float(config.waveform_array.resolution_sigma_max_m), 0.6 * sigma_xy),
+        )
         color_r, color_g, color_b = _energy_rgb(amplitude)
         splats.append(
             {
@@ -473,11 +613,11 @@ def _build_splats(config: AppConfig, projection_rows: list[dict[str, Any]], is_s
                 "x_m": row.get("projection_x_m", row.get("x_m", 0.0)),
                 "y_m": row.get("projection_y_m", row.get("y_m", 0.0)),
                 "z_m": row.get("projection_z_m", row.get("z_m", 0.0)),
-                "sigma_x_m": config.waveform_array.splat_sigma_horizontal_m,
-                "sigma_y_m": config.waveform_array.splat_sigma_horizontal_m,
-                "sigma_z_m": config.waveform_array.splat_sigma_vertical_m,
+                "sigma_x_m": sigma_xy,
+                "sigma_y_m": sigma_xy,
+                "sigma_z_m": sigma_z,
                 "amplitude": amplitude,
-                "opacity": clamp01(0.10 + 0.90 * amplitude),
+                "opacity": clamp01(0.10 + 0.60 * amplitude + 0.30 * array_coherence),
                 "phase_rad": row.get("phase_resultant_rad", 0.0),
                 "color_r": color_r,
                 "color_g": color_g,
@@ -485,6 +625,14 @@ def _build_splats(config: AppConfig, projection_rows: list[dict[str, Any]], is_s
                 "source_projection_rank": row.get("projection_rank", 0),
                 "source_frequency_hz": row.get("frequency_hz", 0.0),
                 "source_projection_method": row.get("projection_method", ""),
+                "array_coherence": array_coherence,
+                "beam_power": row.get("beam_power", 0.0),
+                "aperture_km": row.get("aperture_km", 0.0),
+                "frequency_band": row.get("frequency_band", ""),
+                "velocity_model": row.get("velocity_model", ""),
+                "slowness_x_s_per_km": row.get("slowness_x_s_per_km", 0.0),
+                "slowness_y_s_per_km": row.get("slowness_y_s_per_km", 0.0),
+                "dominant_source": row.get("dominant_source", "unknown"),
                 "interpretation": "relative coherent-energy Gaussian primitive; not a claim of rupture timing or unique structure",
                 "is_sample_data": is_sample,
             }
@@ -564,6 +712,10 @@ def _write_splat_preview(config: AppConfig, paths: ProjectPaths, rows: list[dict
             row.get("time_utc", ""),
             row.get("source_frequency_hz", ""),
             row.get("amplitude", ""),
+            row.get("array_coherence", ""),
+            row.get("aperture_km", ""),
+            row.get("sigma_x_m", ""),
+            row.get("dominant_source", ""),
             row.get("is_sample_data", is_sample),
         ]
         for row in limit_rows
@@ -586,7 +738,9 @@ def _write_splat_preview(config: AppConfig, paths: ProjectPaths, rows: list[dict
                 hovertemplate=(
                     "primitive=%{customdata[0]}<br>event=%{customdata[1]}<br>"
                     "time=%{customdata[2]}<br>frequency=%{customdata[3]} Hz<br>"
-                    "energy=%{customdata[4]:.3f}<br>is_sample_data=%{customdata[5]}<extra></extra>"
+                    "energy=%{customdata[4]:.3f}<br>array_coherence=%{customdata[5]:.3f}<br>"
+                    "aperture=%{customdata[6]:.1f} km<br>sigma=%{customdata[7]:.0f} m<br>"
+                    "source=%{customdata[8]}<br>is_sample_data=%{customdata[9]}<extra></extra>"
                 ),
                 name="Gaussian splat primitives",
             )
@@ -627,6 +781,9 @@ def _write_splat_preview(config: AppConfig, paths: ProjectPaths, rows: list[dict
                 "total_splats": len(rows),
                 "is_sample_data": is_sample,
                 "vertical_exaggeration": config.visualization_3d.vertical_exaggeration,
+                "synthetic_aperture_enabled": config.waveform_array.synthetic_aperture_enabled,
+                "uses_phase": config.waveform_array.use_phase,
+                "uses_group_delay": config.waveform_array.use_group_delay,
             },
             indent=2,
             sort_keys=True,
