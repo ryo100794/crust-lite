@@ -25,11 +25,32 @@ def test_sample_waveform_array_projection_outputs() -> None:
     assert splats
     assert result["projection_rows"] == len(projection)
     assert result["splat_rows"] == len(splats)
-    assert {"beam_energy", "phase_coherence", "delay_fit", "projection_x_m", "projection_y_m"}.issubset(projection[0])
-    assert {"sigma_x_m", "sigma_y_m", "sigma_z_m", "opacity", "phase_rad"}.issubset(splats[0])
+    assert {
+        "beam_energy",
+        "phase_coherence",
+        "delay_fit",
+        "array_coherence",
+        "beam_power",
+        "aperture_km",
+        "slowness_x_s_per_km",
+        "slowness_y_s_per_km",
+        "projection_x_m",
+        "projection_y_m",
+    }.issubset(projection[0])
+    assert {
+        "sigma_x_m",
+        "sigma_y_m",
+        "sigma_z_m",
+        "opacity",
+        "phase_rad",
+        "array_coherence",
+        "aperture_km",
+        "dominant_source",
+    }.issubset(splats[0])
     assert paths.outputs_3d.joinpath("gaussian_splat_primitives.ply").exists()
     assert paths.outputs_3d.joinpath("array_projection_splats.html").exists()
     meta = read_sidecar(paths.data_processed / "waveform_array_projection.parquet")
+    assert meta["synthetic_aperture_enabled"] is True
     assert meta["uses_phase"] is True
     assert meta["uses_group_delay"] is True
     assert meta["not_prediction"] is True
