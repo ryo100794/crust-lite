@@ -65,6 +65,7 @@ class DataSourceConfig:
 @dataclass(frozen=True)
 class WaveformArrayConfig:
     enabled: bool = True
+    synthetic_aperture_enabled: bool = True
     time_bin_days: int = 30
     max_events: int = 2000
     max_stations_per_event: int = 256
@@ -77,6 +78,9 @@ class WaveformArrayConfig:
     max_projection_rows: int = 100_000
     splat_sigma_horizontal_m: float = 20_000.0
     splat_sigma_vertical_m: float = 12_000.0
+    resolution_sigma_min_m: float = 5_000.0
+    resolution_sigma_max_m: float = 50_000.0
+    hinet_source_boost: float = 1.15
     max_splats: int = 100_000
     use_phase: bool = True
     use_group_delay: bool = True
@@ -271,6 +275,12 @@ def parse_config(raw: dict[str, Any]) -> AppConfig:
         raise ValueError("waveform_array.velocity_km_s must be positive")
     if waveform_array.delay_sigma_s <= 0:
         raise ValueError("waveform_array.delay_sigma_s must be positive")
+    if waveform_array.resolution_sigma_min_m <= 0 or waveform_array.resolution_sigma_max_m <= 0:
+        raise ValueError("waveform_array resolution sigma bounds must be positive")
+    if waveform_array.resolution_sigma_min_m > waveform_array.resolution_sigma_max_m:
+        raise ValueError("waveform_array.resolution_sigma_min_m must be <= resolution_sigma_max_m")
+    if waveform_array.hinet_source_boost <= 0:
+        raise ValueError("waveform_array.hinet_source_boost must be positive")
 
     return AppConfig(
         region=RegionConfig(
