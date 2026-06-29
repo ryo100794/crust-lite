@@ -53,6 +53,7 @@ wait_pid_file() {
 
 if [[ "${wait_fdsn}" == "1" ]]; then
   wait_pid_file /workspace/equake/logs/fdsn_waveforms.pid fdsn
+  wait_pid_file /workspace/equake/logs/fdsn_waveforms_m55.pid fdsn_m55
 fi
 if [[ "${wait_hinet}" == "1" ]]; then
   wait_pid_file /workspace/equake/logs/hinet_waveforms.pid hinet
