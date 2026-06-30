@@ -75,6 +75,14 @@ class WaveformArrayConfig:
     velocity_km_s: float = 3.5
     delay_sigma_s: float = 0.35
     late_phase_max_delay_s: float = 30.0
+    reject_late_delay_clipped: bool = True
+    include_direct_in_structure_splats: bool = False
+    catalog_integer_depth_uncertainty_km: float = 8.0
+    catalog_integer_depth_weight: float = 0.20
+    direct_depth_weight: float = 0.55
+    reflected_depth_weight: float = 1.0
+    scattered_depth_weight: float = 0.75
+    residual_depth_weight: float = 0.35
     top_projections_per_event: int = 4
     max_projection_rows: int = 100_000
     splat_sigma_horizontal_m: float = 20_000.0
@@ -278,6 +286,18 @@ def parse_config(raw: dict[str, Any]) -> AppConfig:
         raise ValueError("waveform_array.delay_sigma_s must be positive")
     if waveform_array.late_phase_max_delay_s <= 0:
         raise ValueError("waveform_array.late_phase_max_delay_s must be positive")
+    if waveform_array.catalog_integer_depth_uncertainty_km <= 0:
+        raise ValueError("waveform_array.catalog_integer_depth_uncertainty_km must be positive")
+    for weight_name in (
+        "catalog_integer_depth_weight",
+        "direct_depth_weight",
+        "reflected_depth_weight",
+        "scattered_depth_weight",
+        "residual_depth_weight",
+    ):
+        weight = float(getattr(waveform_array, weight_name))
+        if weight < 0.0 or weight > 1.0:
+            raise ValueError(f"waveform_array.{weight_name} must be within [0, 1]")
     if waveform_array.resolution_sigma_min_m <= 0 or waveform_array.resolution_sigma_max_m <= 0:
         raise ValueError("waveform_array resolution sigma bounds must be positive")
     if waveform_array.resolution_sigma_min_m > waveform_array.resolution_sigma_max_m:

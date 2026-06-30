@@ -52,6 +52,10 @@ PROJECTION_COLUMNS = [
     "depth_source",
     "depth_method",
     "depth_artifact_risk",
+    "depth_uncertainty_km",
+    "structural_weight",
+    "projection_quality_flag",
+    "projection_quality_score",
     "excess_path_km",
     "residual_spread_s",
     "positive_residual_fraction",
@@ -97,6 +101,10 @@ SPLAT_COLUMNS = [
     "depth_source",
     "depth_method",
     "depth_artifact_risk",
+    "depth_uncertainty_km",
+    "structural_weight",
+    "projection_quality_flag",
+    "projection_quality_score",
     "excess_path_km",
     "residual_spread_s",
     "positive_residual_fraction",
@@ -505,6 +513,52 @@ def _late_projection_depth_m(event_z_m: float, late_delay_s: float, velocity_km_
     return min(max_depth_m, max(0.0, event_z_m + 0.5 * extra_path_m))
 
 
+def _boolish(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y"}
+    return bool(value)
+
+
+def _integer_km_depth(z_m: float) -> bool:
+    depth_km = z_m / 1000.0
+    return abs(depth_km - round(depth_km)) < 1.0e-6
+
+
+def _late_delay_is_clipped(row: dict[str, Any], config: AppConfig) -> bool:
+    if "late_delay_clipped" in row:
+        return _boolish(row.get("late_delay_clipped"))
+    primitive_type = str(row.get("primitive_type", "direct") or "direct")
+    if primitive_type == "direct":
+        return False
+    delay_s = float(row.get("late_phase_delay_s", 0.0) or 0.0)
+    max_delay_s = float(config.waveform_array.late_phase_max_delay_s)
+    return delay_s >= max(0.0, max_delay_s - 1.0e-6)
+
+
+def _projection_depth_quality(config: AppConfig, row: dict[str, Any]) -> tuple[float, float, str, float]:
+    primitive_type = str(row.get("primitive_type", "direct") or "direct")
+    z_m = float(row.get("z_m", row.get("projection_z_m", 0.0)) or 0.0)
+    if primitive_type != "direct" and _late_delay_is_clipped(row, config):
+        return 0.0, float(config.filters.max_depth_km), "late_delay_window_clipped_rejected", 0.0
+    if primitive_type == "direct":
+        if _integer_km_depth(z_m):
+            weight = float(config.waveform_array.catalog_integer_depth_weight)
+            uncertainty = float(config.waveform_array.catalog_integer_depth_uncertainty_km)
+            return weight, uncertainty, "catalog_integer_depth_downweighted", weight
+        weight = float(config.waveform_array.direct_depth_weight)
+        return weight, max(2.0, 0.25 * float(config.waveform_array.catalog_integer_depth_uncertainty_km)), "direct_catalog_depth", weight
+    if primitive_type == "reflected":
+        weight = float(config.waveform_array.reflected_depth_weight)
+        return weight, max(1.0, float(row.get("residual_spread_s", 0.0) or 0.0) * config.waveform_array.velocity_km_s), "late_reflection_model_depth", weight
+    if primitive_type == "scattered":
+        weight = float(config.waveform_array.scattered_depth_weight)
+        return weight, max(3.0, float(row.get("residual_spread_s", 0.0) or 0.0) * config.waveform_array.velocity_km_s), "late_scattering_model_depth", weight
+    weight = float(config.waveform_array.residual_depth_weight)
+    return weight, max(5.0, float(row.get("residual_spread_s", 0.0) or 0.0) * config.waveform_array.velocity_km_s), "late_residual_low_confidence", weight
+
+
 def _projection_sort_key(row: dict[str, Any]) -> tuple[float, float]:
     return float(row.get("beam_power", 0.0) or 0.0), float(row.get("beam_energy", 0.0) or 0.0)
 
@@ -633,6 +687,18 @@ def _project_event_task(task: tuple[AppConfig, str, dict[str, Any], list[tuple[f
                     "depth_source": "catalog_hypocenter",
                     "depth_method": "event_catalog_depth_fixed_to_direct_projection",
                     "depth_artifact_risk": "catalog_depth_quantization_possible",
+                    "depth_uncertainty_km": float(config.waveform_array.catalog_integer_depth_uncertainty_km)
+                    if _integer_km_depth(z_m)
+                    else max(2.0, 0.25 * float(config.waveform_array.catalog_integer_depth_uncertainty_km)),
+                    "structural_weight": float(config.waveform_array.catalog_integer_depth_weight)
+                    if _integer_km_depth(z_m)
+                    else float(config.waveform_array.direct_depth_weight),
+                    "projection_quality_flag": "catalog_integer_depth_downweighted"
+                    if _integer_km_depth(z_m)
+                    else "direct_catalog_depth",
+                    "projection_quality_score": float(config.waveform_array.catalog_integer_depth_weight)
+                    if _integer_km_depth(z_m)
+                    else float(config.waveform_array.direct_depth_weight),
                     "excess_path_km": 0.0,
                     "residual_spread_s": 0.0,
                     "positive_residual_fraction": 0.0,
@@ -715,6 +781,30 @@ def _project_event_task(task: tuple[AppConfig, str, dict[str, Any], list[tuple[f
                             "depth_source": "late_phase_model",
                             "depth_method": "event_depth_plus_half_extra_path_homogeneous_velocity",
                             "depth_artifact_risk": "late_delay_window_clipped" if late_delay_clipped else "model_derived_depth",
+                            "depth_uncertainty_km": float(config.filters.max_depth_km)
+                            if late_delay_clipped
+                            else max(1.0, spread_s * config.waveform_array.velocity_km_s),
+                            "structural_weight": 0.0
+                            if late_delay_clipped
+                            else float(
+                                config.waveform_array.reflected_depth_weight
+                                if primitive_type == "reflected"
+                                else config.waveform_array.scattered_depth_weight
+                                if primitive_type == "scattered"
+                                else config.waveform_array.residual_depth_weight
+                            ),
+                            "projection_quality_flag": "late_delay_window_clipped_rejected"
+                            if late_delay_clipped
+                            else f"{primitive_type}_model_depth",
+                            "projection_quality_score": 0.0
+                            if late_delay_clipped
+                            else float(
+                                config.waveform_array.reflected_depth_weight
+                                if primitive_type == "reflected"
+                                else config.waveform_array.scattered_depth_weight
+                                if primitive_type == "scattered"
+                                else config.waveform_array.residual_depth_weight
+                            ),
                             "excess_path_km": excess_path_km,
                             "residual_spread_s": spread_s,
                             "positive_residual_fraction": positive_fraction,
@@ -889,6 +979,10 @@ def build_waveform_array_projection(
         "projection_type_counts": _count_values(projection_rows, "primitive_type"),
         "path_family_counts": _count_values(projection_rows, "path_family"),
         "splat_type_counts": _count_values(splat_rows, "primitive_type"),
+        "splat_quality_flag_counts": _count_values(splat_rows, "projection_quality_flag"),
+        "reject_late_delay_clipped": config.waveform_array.reject_late_delay_clipped,
+        "include_direct_in_structure_splats": config.waveform_array.include_direct_in_structure_splats,
+        "catalog_integer_depth_uncertainty_km": config.waveform_array.catalog_integer_depth_uncertainty_km,
         "synthetic_aperture_enabled": config.waveform_array.synthetic_aperture_enabled,
         "resolution_sigma_min_m": config.waveform_array.resolution_sigma_min_m,
         "resolution_sigma_max_m": config.waveform_array.resolution_sigma_max_m,
@@ -923,20 +1017,40 @@ def _build_splats(config: AppConfig, projection_rows: list[dict[str, Any]], is_s
     These are not rendered as the final scientific result; they are compact
     seeds for GPU experiments where multiple 2D projections can be fused.
     """
+    quality_rows: list[dict[str, Any]] = []
+    for source_row in projection_rows:
+        row = dict(source_row)
+        primitive_type = str(row.get("primitive_type", "direct") or "direct")
+        if primitive_type == "direct" and not config.waveform_array.include_direct_in_structure_splats:
+            continue
+        structural_weight, depth_uncertainty_km, quality_flag, quality_score = _projection_depth_quality(config, row)
+        if structural_weight <= 0.0 and config.waveform_array.reject_late_delay_clipped:
+            continue
+        row["structural_weight"] = structural_weight
+        row["depth_uncertainty_km"] = depth_uncertainty_km
+        row["projection_quality_flag"] = quality_flag
+        row["projection_quality_score"] = quality_score
+        quality_rows.append(row)
     rows = sorted(
-        projection_rows,
-        key=lambda row: (float(row.get("beam_power", 0.0) or 0.0), float(row.get("beam_energy", 0.0) or 0.0)),
+        quality_rows,
+        key=lambda row: (
+            float(row.get("beam_power", 0.0) or 0.0) * float(row.get("structural_weight", 1.0) or 0.0),
+            float(row.get("beam_energy", 0.0) or 0.0) * float(row.get("projection_quality_score", 1.0) or 0.0),
+        ),
         reverse=True,
     )
     rows = rows[: config.waveform_array.max_splats]
     splats: list[dict[str, Any]] = []
     for idx, row in enumerate(rows, start=1):
-        amplitude = clamp01(float(row.get("beam_energy", 0.0) or 0.0))
-        array_coherence = clamp01(float(row.get("array_coherence", amplitude) or 0.0))
+        structural_weight = clamp01(float(row.get("structural_weight", 1.0) or 0.0))
+        depth_uncertainty_km = float(row.get("depth_uncertainty_km", 0.0) or 0.0)
+        amplitude = clamp01(float(row.get("beam_energy", 0.0) or 0.0) * structural_weight)
+        array_coherence = clamp01(float(row.get("array_coherence", amplitude) or 0.0) * max(0.25, structural_weight))
         sigma_xy = float(row.get("gaussian_splat_sigma_m", config.waveform_array.splat_sigma_horizontal_m) or 0.0)
         sigma_z = max(
             float(config.waveform_array.splat_sigma_vertical_m),
             min(float(config.waveform_array.resolution_sigma_max_m), 0.6 * sigma_xy),
+            depth_uncertainty_km * 1000.0,
         )
         primitive_type = str(row.get("primitive_type", "direct") or "direct")
         color_r, color_g, color_b = _primitive_rgb(amplitude, primitive_type)
@@ -960,6 +1074,10 @@ def _build_splats(config: AppConfig, projection_rows: list[dict[str, Any]], is_s
                 "depth_source": row.get("depth_source", "catalog_hypocenter" if primitive_type == "direct" else "late_phase_model"),
                 "depth_method": row.get("depth_method", "event_catalog_depth_fixed_to_direct_projection" if primitive_type == "direct" else "event_depth_plus_half_extra_path_homogeneous_velocity"),
                 "depth_artifact_risk": row.get("depth_artifact_risk", "catalog_depth_quantization_possible" if primitive_type == "direct" else "model_derived_depth"),
+                "depth_uncertainty_km": depth_uncertainty_km,
+                "structural_weight": structural_weight,
+                "projection_quality_flag": row.get("projection_quality_flag", "unknown"),
+                "projection_quality_score": row.get("projection_quality_score", structural_weight),
                 "excess_path_km": row.get("excess_path_km", 0.0),
                 "residual_spread_s": row.get("residual_spread_s", 0.0),
                 "positive_residual_fraction": row.get("positive_residual_fraction", 0.0),

@@ -376,7 +376,7 @@ def _webgl_html(payload: dict[str, Any]) -> str:
     <label><input type="checkbox" data-depth-flag="2" checked>delay-window clipped</label>
     <label><input type="checkbox" data-depth-flag="3" checked>late model depth</label>
   </div>
-  <div>depth diagnostics: amber=catalog-rounded direct, red=delay-window clipped, cyan=late model-derived</div>
+  <div>depth diagnostics: amber=catalog-rounded direct, red=delay-window clipped, cyan=late model-derived.</div>
   <div>
     <label><input type="checkbox" data-type="0" checked>direct</label>
     <label><input type="checkbox" data-type="1" checked>reflected</label>
@@ -404,7 +404,7 @@ const canvas = document.getElementById('gl');
 const gl = canvas.getContext('webgl2', {{antialias: true, alpha: false}});
 if (!gl) throw new Error('WebGL2 is required');
 document.getElementById('stats').textContent =
-  `splats=${{payload.metadata.displayed_splats}} / clipped late=${{payload.metadata.depth_diagnostics.late_delay_clipped_count}} / outline vertices=${{payload.terrain.outline_vertices}} / renderer=${{payload.metadata.renderer}}`;
+  `splats=${{payload.metadata.displayed_splats}} / clipped late in rendered splats=${{payload.metadata.depth_diagnostics.late_delay_clipped_count}} / outline vertices=${{payload.terrain.outline_vertices}}`;
 
 function shader(type, src) {{
   const s = gl.createShader(type);
@@ -688,6 +688,10 @@ def write_webgl_splat_preview(config: AppConfig, paths: ProjectPaths, rows: list
         "splat_color_default": "grayscale_relative_amplitude",
         "splat_color_modes": ["grayscale_relative_amplitude", "path_type_overlay", "depth_diagnostics"],
         "splat_color_note": "Default grayscale encodes relative amplitude. Path-type colors and depth diagnostics are optional overlays, not intensity.",
+        "depth_quality_handling": {
+            "display_filtering_default": "none",
+            "computation_policy": "late-delay clipped candidates are rejected during splat construction; direct-wave catalog-depth anchors are excluded from structure splats unless include_direct_in_structure_splats=true.",
+        },
         "depth_diagnostics": depth_diagnostics,
         "is_sample_data": is_sample,
         "vertical_exaggeration": config.visualization_3d.vertical_exaggeration,
