@@ -91,3 +91,15 @@
 - Hi-net WIN32 conversion tools (`catwin32`, `win2sac_32`) must exist under the workspace, e.g. `.deps/hinet-win32tools/bin`; missing tools caused downloads to fail after request preparation.
 - HinetPy/win2sac SAC output is treated as sensitivity-removed and scaled by 1e9. Do not multiply SAC data again by `calib * scale`; keep orientation metadata and defer component rotation.
 - USGS mechanism-detail collection may stall on public API detail requests. Use append-only CSV, smaller worker counts, and resume rather than discarding partial mechanism rows.
+
+## 2026-06-30 15:05 UTC - Expanded East Japan M2+ Run
+
+- Additional authenticated Hi-net catalogs were collected for East Japan M2+:
+  - 2024-01-01: 734 events.
+  - 2024-01-02 through 2024-01-07: 4,221 events.
+  - 2024-01-08 through 2024-01-14: 1,560 events.
+- Waveform collection now targets all 563 East Japan Hi-net 0101 stations via 8 station groups and explicitly selects small events (`event_selection=smallest`) for the Jan2-14 jobs.
+- HinetPy `threads=2` caused `BrokenPipeError` in long all-station jobs. Current stable setting is `threads=1` with multiple date-range jobs instead of per-request multiprocessing.
+- Current RunPod CPU visibility is constrained by affinity to 2 cores (`nproc=2`) despite `os.cpu_count()` reporting 192. `array_projection` correctly caps workers to the visible affinity. Higher CPU utilization requires increasing Pod CPU allocation, not only disk.
+- Latest processed snapshot used 328,015 waveform spectra rows and estimated transfer functions for 2,378 station/component series.
+- Latest array projection built 208,000 projection rows / splat primitives. GPU prep produced 636,765 voxel LOD rows and 539 GPU shards, synchronized to `/mnt/slam/equake`.
