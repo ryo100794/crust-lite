@@ -8,6 +8,7 @@ from crust_lite.config import AppConfig
 from crust_lite.geo import LocalProjector
 from crust_lite.paths import ProjectPaths
 from crust_lite.viz.japan_outline import local_context_outlines
+from crust_lite.viz.tectonics import japan_tectonic_context
 
 
 def _count_values(rows: list[dict[str, Any]], key: str) -> dict[str, int]:
@@ -138,6 +139,38 @@ def _terrain_payload(config: AppConfig, is_sample: bool) -> dict[str, Any]:
     }
 
 
+def _tectonics_payload(config: AppConfig) -> dict[str, Any]:
+    projector = LocalProjector(config.region)
+    vertical = config.visualization_3d.vertical_exaggeration
+    context = japan_tectonic_context()
+
+    def project_line(line: dict[str, Any]) -> dict[str, Any]:
+        flat: list[float] = []
+        for lon, lat, depth_km in line["coordinates"]:
+            x_m, y_m = projector.lonlat_to_xy(float(lon), float(lat))
+            z_plot = -1.0 * float(depth_km) * 1000.0 * vertical
+            flat.extend([_round(x_m), _round(y_m), _round(z_plot)])
+        return {
+            "name": line["name"],
+            "plate": line["plate"],
+            "kind": line["kind"],
+            "color": list(line["color"]),
+            "positions": flat,
+            "vertices": len(flat) // 3,
+        }
+
+    boundaries = [project_line(line) for line in context["boundaries"]]
+    interfaces = [project_line(line) for line in context["interfaces"]]
+    return {
+        "boundaries": boundaries,
+        "interfaces": interfaces,
+        "boundary_vertices": sum(line["vertices"] for line in boundaries),
+        "interface_vertices": sum(line["vertices"] for line in interfaces),
+        "source": context["source"],
+        "note": context["note"],
+    }
+
+
 def _splat_payload(config: AppConfig, rows: list[dict[str, Any]]) -> dict[str, Any]:
     positions: list[float] = []
     colors: list[float] = []
@@ -147,6 +180,10 @@ def _splat_payload(config: AppConfig, rows: list[dict[str, Any]]) -> dict[str, A
     amplitudes: list[float] = []
     line_positions: list[float] = []
     vertical = config.visualization_3d.vertical_exaggeration
+    amplitude_values = [float(row.get("amplitude", 0.0) or 0.0) for row in rows]
+    min_amplitude = min(amplitude_values) if amplitude_values else 0.0
+    max_amplitude = max(amplitude_values) if amplitude_values else 1.0
+    amplitude_span = max(max_amplitude - min_amplitude, 1.0e-12)
     line_rows = sorted(
         rows,
         key=lambda row: (float(row.get("beam_power", 0.0) or 0.0), float(row.get("amplitude", 0.0) or 0.0)),
@@ -158,13 +195,10 @@ def _splat_payload(config: AppConfig, rows: list[dict[str, Any]]) -> dict[str, A
         y_m = float(row.get("y_m", 0.0) or 0.0)
         z_plot = -1.0 * float(row.get("z_m", 0.0) or 0.0) * vertical
         positions.extend([_round(x_m), _round(y_m), _round(z_plot)])
-        colors.extend(
-            [
-                _round(float(row.get("color_r", 180) or 180) / 255.0, 5),
-                _round(float(row.get("color_g", 120) or 120) / 255.0, 5),
-                _round(float(row.get("color_b", 80) or 80) / 255.0, 5),
-            ]
-        )
+        amplitude = float(row.get("amplitude", 0.0) or 0.0)
+        relative_intensity = max(0.0, min(1.0, (amplitude - min_amplitude) / amplitude_span))
+        grayscale = 0.10 + 0.90 * math.sqrt(relative_intensity)
+        colors.extend([_round(grayscale, 5), _round(grayscale, 5), _round(grayscale, 5)])
         sigma_xy = max(float(row.get("sigma_x_m", 1.0) or 1.0), float(row.get("sigma_y_m", 1.0) or 1.0))
         sigma_z = max(float(row.get("sigma_z_m", 1.0) or 1.0) * vertical, 1.0)
         sizes.append(_round(max(sigma_xy, 0.35 * sigma_z), 3))
@@ -189,9 +223,12 @@ def _splat_payload(config: AppConfig, rows: list[dict[str, Any]]) -> dict[str, A
     }
 
 
-def _bounds_from_payload(splats: dict[str, Any], terrain: dict[str, Any]) -> dict[str, float]:
+def _bounds_from_payload(splats: dict[str, Any], terrain: dict[str, Any], tectonics: dict[str, Any] | None = None) -> dict[str, float]:
     values = [splats["positions"], terrain["positions"]]
     values.extend(outline["positions"] for outline in terrain.get("outlines", []))
+    if tectonics is not None:
+        values.extend(line["positions"] for line in tectonics.get("boundaries", []))
+        values.extend(line["positions"] for line in tectonics.get("interfaces", []))
     xs: list[float] = []
     ys: list[float] = []
     zs: list[float] = []
@@ -239,15 +276,22 @@ def _webgl_html(payload: dict[str, Any]) -> str:
   <div class="notice">研究用の状態表示です。地震の発生日・場所・規模を断定的に予測するものではありません。</div>
   <div id="stats"></div>
   <div>
-    <label><input type="checkbox" data-type="0" checked><span class="swatch" style="background:#48a0d8"></span>direct</label>
-    <label><input type="checkbox" data-type="1" checked><span class="swatch" style="background:#f0a640"></span>reflected</label>
-    <label><input type="checkbox" data-type="2" checked><span class="swatch" style="background:#ad67df"></span>scattered</label>
-    <label><input type="checkbox" data-type="3" checked><span class="swatch" style="background:#a0a0a0"></span>residual</label>
+    <label>color <select id="colorMode"><option value="0" selected>grayscale intensity</option><option value="1">path type overlay</option></select></label>
+    <span>classification overlay: direct / reflected / scattered / residual</span>
+  </div>
+  <div>
+    <label><input type="checkbox" data-type="0" checked>direct</label>
+    <label><input type="checkbox" data-type="1" checked>reflected</label>
+    <label><input type="checkbox" data-type="2" checked>scattered</label>
+    <label><input type="checkbox" data-type="3" checked>residual</label>
   </div>
   <div>
     <label><input id="outlineToggle" type="checkbox" checked>Japan outline</label>
-    <label><input id="lineToggle" type="checkbox" checked>source lines</label>
+    <label><input id="plateBoundaryToggle" type="checkbox" checked>plate boundaries</label>
+    <label><input id="plateInterfaceToggle" type="checkbox" checked>plate interfaces</label>
+    <label><input id="lineToggle" type="checkbox">source-projection guides</label>
   </div>
+  <div>plate overlay: schematic trench/trough traces and slab-interface wireframes for visual context only</div>
   <div>
     splat scale <input id="scaleSlider" type="range" min="0.25" max="8" step="0.05" value="1.45">
     opacity <input id="opacitySlider" type="range" min="0.15" max="2.5" step="0.05" value="1.0">
@@ -293,8 +337,14 @@ void main() {{
 const splatFS = `#version 300 es
 precision highp float;
 in vec3 v_color; in float v_opacity; in float v_type;
-uniform vec4 u_visible; uniform float u_opacityScale;
+uniform vec4 u_visible; uniform float u_opacityScale; uniform int u_colorMode;
 out vec4 outColor;
+vec3 pathTypeColor(float t) {{
+  if (t < 0.5) return vec3(0.30, 0.72, 1.00);
+  if (t < 1.5) return vec3(1.00, 0.62, 0.16);
+  if (t < 2.5) return vec3(0.72, 0.42, 0.95);
+  return vec3(0.68, 0.68, 0.68);
+}}
 void main() {{
   float vis = v_type < 0.5 ? u_visible.x : (v_type < 1.5 ? u_visible.y : (v_type < 2.5 ? u_visible.z : u_visible.w));
   if (vis < 0.5) discard;
@@ -303,7 +353,8 @@ void main() {{
   if (r2 > 1.0) discard;
   float gaussian = exp(-3.25 * r2);
   float alpha = clamp(v_opacity * u_opacityScale * gaussian, 0.0, 0.92);
-  outColor = vec4(v_color, alpha);
+  vec3 color = u_colorMode == 1 ? pathTypeColor(v_type) : v_color;
+  outColor = vec4(color, alpha);
 }}`;
 const meshVS = `#version 300 es
 precision highp float;
@@ -359,6 +410,8 @@ const terrain = {{
 }};
 const sourceLines = {{ n: payload.splats.source_lines.length / 3, pos: buf(normPositions(payload.splats.source_lines)) }};
 const outlineBuffers = payload.terrain.outlines.map(o => ({{ name:o.name, n:o.positions.length/3, pos:buf(normPositions(o.positions)) }}));
+const plateBoundaryBuffers = payload.tectonics.boundaries.map(o => ({{ name:o.name, color:o.color, n:o.positions.length/3, pos:buf(normPositions(o.positions)) }}));
+const plateInterfaceBuffers = payload.tectonics.interfaces.map(o => ({{ name:o.name, color:o.color, n:o.positions.length/3, pos:buf(normPositions(o.positions)) }}));
 
 function attrib(p, name, buffer, size) {{
   const loc = gl.getAttribLocation(p, name);
@@ -387,7 +440,7 @@ function lookAt(eye, target, up) {{
   return o;
 }}
 let yaw=0.72, pitch=0.46, dist=3.2, pan=[0,0,0];
-let visible=[1,1,1,1], showTerrain=false, showOutlines=true, showLines=true, splatScale=1.45, opacityScale=1.0;
+let visible=[1,1,1,1], showTerrain=false, showOutlines=true, showPlateBoundaries=true, showPlateInterfaces=true, showLines=false, splatScale=1.45, opacityScale=1.0, colorMode=0;
 const pointers = new Map();
 let lastCentroid = null, lastPinchDistance = 0, lastPointer = null, panning = false;
 function mvp() {{
@@ -423,6 +476,20 @@ function render() {{
     gl.uniform4f(gl.getUniformLocation(lineProg,'u_color'), 0.82, 1.0, 0.78, 0.95);
     for (const o of outlineBuffers) {{ attrib(lineProg,'a_pos',o.pos,3); gl.drawArrays(gl.LINE_STRIP,0,o.n); }}
   }}
+  if (showPlateInterfaces) {{
+    for (const line of plateInterfaceBuffers) {{
+      const c = line.color;
+      gl.uniform4f(gl.getUniformLocation(lineProg,'u_color'), c[0], c[1], c[2], c[3]);
+      attrib(lineProg,'a_pos',line.pos,3); gl.drawArrays(gl.LINE_STRIP,0,line.n);
+    }}
+  }}
+  if (showPlateBoundaries) {{
+    for (const line of plateBoundaryBuffers) {{
+      const c = line.color;
+      gl.uniform4f(gl.getUniformLocation(lineProg,'u_color'), c[0], c[1], c[2], c[3]);
+      attrib(lineProg,'a_pos',line.pos,3); gl.drawArrays(gl.LINE_STRIP,0,line.n);
+    }}
+  }}
   if (showLines) {{
     gl.uniform4f(gl.getUniformLocation(lineProg,'u_color'), 0.65, 0.78, 0.90, 0.23);
     attrib(lineProg,'a_pos',sourceLines.pos,3); gl.drawArrays(gl.LINES,0,sourceLines.n);
@@ -432,6 +499,7 @@ function render() {{
   gl.uniformMatrix4fv(gl.getUniformLocation(splatProg,'u_mvp'), false, matrix);
   gl.uniform1f(gl.getUniformLocation(splatProg,'u_pointScale'), splatScale);
   gl.uniform1f(gl.getUniformLocation(splatProg,'u_opacityScale'), opacityScale);
+  gl.uniform1i(gl.getUniformLocation(splatProg,'u_colorMode'), colorMode);
   gl.uniform4f(gl.getUniformLocation(splatProg,'u_visible'), visible[0], visible[1], visible[2], visible[3]);
   attrib(splatProg,'a_pos',splat.pos,3); attrib(splatProg,'a_color',splat.color,3); attrib(splatProg,'a_size',splat.size,1); attrib(splatProg,'a_opacity',splat.opacity,1); attrib(splatProg,'a_type',splat.type,1);
   gl.drawArrays(gl.POINTS,0,splat.n); gl.depthMask(true);
@@ -479,7 +547,10 @@ canvas.addEventListener('pointercancel', endPointer);
 canvas.addEventListener('lostpointercapture', endPointer);
 canvas.addEventListener('wheel', e => {{ e.preventDefault(); dist=Math.max(0.55,Math.min(12,dist*Math.exp(e.deltaY*0.001))); render(); }}, {{passive:false}});
 document.querySelectorAll('input[data-type]').forEach(el => el.addEventListener('change', e => {{ visible[Number(e.target.dataset.type)] = e.target.checked ? 1 : 0; render(); }}));
+document.getElementById('colorMode').addEventListener('change', e => {{ colorMode=Number(e.target.value); render(); }});
 document.getElementById('outlineToggle').addEventListener('change', e => {{ showOutlines=e.target.checked; render(); }});
+document.getElementById('plateBoundaryToggle').addEventListener('change', e => {{ showPlateBoundaries=e.target.checked; render(); }});
+document.getElementById('plateInterfaceToggle').addEventListener('change', e => {{ showPlateInterfaces=e.target.checked; render(); }});
 document.getElementById('lineToggle').addEventListener('change', e => {{ showLines=e.target.checked; render(); }});
 document.getElementById('scaleSlider').addEventListener('input', e => {{ splatScale=Number(e.target.value); render(); }});
 document.getElementById('opacitySlider').addEventListener('input', e => {{ opacityScale=Number(e.target.value); render(); }});
@@ -495,6 +566,7 @@ def write_webgl_splat_preview(config: AppConfig, paths: ProjectPaths, rows: list
     limit_rows = rows[: min(len(rows), 250_000)]
     splats = _splat_payload(config, limit_rows)
     terrain = _terrain_payload(config, is_sample=is_sample)
+    tectonics = _tectonics_payload(config)
     metadata = {
         "html": str(paths.outputs_3d / "array_projection_splats.html"),
         "renderer": "webgl2_gaussian_point_sprite",
@@ -502,6 +574,10 @@ def write_webgl_splat_preview(config: AppConfig, paths: ProjectPaths, rows: list
         "displayed_splats": len(limit_rows),
         "total_splats": len(rows),
         "line_segments": splats["line_segments"],
+        "source_projection_guides_default_visible": False,
+        "splat_color_default": "grayscale_relative_amplitude",
+        "splat_color_modes": ["grayscale_relative_amplitude", "path_type_overlay"],
+        "splat_color_note": "Default grayscale encodes relative amplitude. Path-type colors are an optional classification overlay, not intensity.",
         "is_sample_data": is_sample,
         "vertical_exaggeration": config.visualization_3d.vertical_exaggeration,
         "synthetic_aperture_enabled": config.waveform_array.synthetic_aperture_enabled,
@@ -519,15 +595,21 @@ def write_webgl_splat_preview(config: AppConfig, paths: ProjectPaths, rows: list
         "japan_outline_target_segment_km": terrain["outline_target_segment_km"],
         "japan_outline_resolution": terrain["outline_resolution"],
         "surface_rendering": "disabled_to_avoid_hiding_subsurface_splats",
+        "tectonic_overlay_source": tectonics["source"],
+        "tectonic_overlay_note": tectonics["note"],
+        "tectonic_boundary_count": len(tectonics["boundaries"]),
+        "tectonic_interface_line_count": len(tectonics["interfaces"]),
+        "tectonic_overlay_default_visible": True,
         "sample_lightweight_rendering": is_sample,
         "rendering": "WebGL2 high-density point-sprite Gaussian splats with outline-only Japan context; not Plotly mesh ellipsoids",
         "not_prediction": True,
     }
     payload = {
         "metadata": metadata,
-        "bounds": _bounds_from_payload(splats, terrain),
+        "bounds": _bounds_from_payload(splats, terrain, tectonics),
         "splats": splats,
         "terrain": terrain,
+        "tectonics": tectonics,
     }
     out = paths.outputs_3d / "array_projection_splats.html"
     out.write_text(_webgl_html(payload), encoding="utf-8")
