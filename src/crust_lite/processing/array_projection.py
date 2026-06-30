@@ -9,7 +9,10 @@ information that is needed for array-style triangulation.
 from __future__ import annotations
 
 import math
+import os
 from collections import defaultdict
+from concurrent.futures import ProcessPoolExecutor
+from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from statistics import median
@@ -522,6 +525,195 @@ def _select_projection_rows(candidates: list[dict[str, Any]], limit: int) -> lis
     return sorted(selected, key=_projection_sort_key, reverse=True)[:limit]
 
 
+
+
+def _available_worker_count(task_count: int) -> int:
+    if task_count <= 1:
+        return 1
+    requested = 0
+    for name in ("CRUST_LITE_ARRAY_WORKERS", "CRUST_LITE_CPU_THREADS"):
+        raw = os.environ.get(name)
+        if raw:
+            with suppress(ValueError):
+                requested = max(requested, int(raw))
+    try:
+        affinity = len(os.sched_getaffinity(0))
+    except Exception:
+        affinity = os.cpu_count() or 1
+    if requested <= 0:
+        requested = affinity
+    return max(1, min(task_count, requested, affinity))
+
+
+def _project_event_task(task: tuple[AppConfig, str, dict[str, Any], list[tuple[float, list[dict[str, Any]]]], list[tuple[float, float]], datetime, bool]) -> list[dict[str, Any]]:
+    config, event_id, event, event_freq_rows, offsets, start, is_sample = task
+    projector = LocalProjector(config.region)
+    velocity_m_s = config.waveform_array.velocity_km_s * 1000.0
+    event_candidates: list[dict[str, Any]] = []
+    event_x = float(event.get("x_m", 0.0) or 0.0)
+    event_y = float(event.get("y_m", 0.0) or 0.0)
+    depth_km = float(event.get("depth_km", 0.0) or 0.0)
+    z_m = float(event.get("z_m", depth_km * 1000.0) or 0.0)
+    time_utc = str(event.get("time_utc", ""))
+    time_bin_index, time_bin_start = _time_bin(time_utc, start, config.waveform_array.time_bin_days)
+    for freq, rows in sorted(event_freq_rows, key=lambda item: item[0]):
+        stations = _station_rows(rows, projector, config.waveform_array.max_stations_per_event)
+        if len(stations) < config.waveform_array.min_stations:
+            continue
+        mean_amp = sum(float(st["log_amplitude"]) for st in stations) / len(stations)
+        dominant_source = _dominant_source(rows)
+        source_weight = _source_weight(config, dominant_source)
+        aperture_km = _station_aperture_km(stations)
+        splat_sigma_m = _resolution_sigma_m(config, freq, aperture_km)
+        frequency_band = f"{freq:g} Hz point spectrum"
+        velocity_model = f"homogeneous_{config.waveform_array.velocity_km_s:g}_km_s"
+        method = (
+            "synthetic_aperture_delay_sum_phase_group_delay_projection"
+            if config.waveform_array.synthetic_aperture_enabled
+            else "delay_and_sum_phase_group_delay_projection"
+        )
+        for dx, dy in offsets:
+            gx = event_x + dx
+            gy = event_y + dy
+            energy, phase_coherence, delay_fit, phase_result = _score_candidate(
+                stations,
+                gx,
+                gy,
+                freq,
+                velocity_m_s,
+                config.waveform_array.delay_sigma_s,
+                config.waveform_array.use_phase,
+                config.waveform_array.use_group_delay,
+            )
+            if config.waveform_array.use_phase and config.waveform_array.use_group_delay:
+                array_coherence = clamp01(phase_coherence * delay_fit)
+            elif config.waveform_array.use_phase:
+                array_coherence = clamp01(phase_coherence)
+            elif config.waveform_array.use_group_delay:
+                array_coherence = clamp01(delay_fit)
+            else:
+                array_coherence = clamp01(energy)
+            beam_power = max(0.0, energy) * math.log1p(len(stations)) * source_weight
+            slowness_x, slowness_y = _slowness_vector_s_per_km(
+                event_x, event_y, gx, gy, config.waveform_array.velocity_km_s
+            )
+            event_candidates.append(
+                {
+                    "event_id": event_id,
+                    "time_utc": time_utc,
+                    "time_bin_index": time_bin_index,
+                    "time_bin_start_utc": time_bin_start,
+                    "magnitude": float(event.get("magnitude", 0.0) or 0.0),
+                    "depth_km": depth_km,
+                    "x_m": event_x,
+                    "y_m": event_y,
+                    "z_m": z_m,
+                    "projection_x_m": gx,
+                    "projection_y_m": gy,
+                    "projection_z_m": z_m,
+                    "path_family": "direct",
+                    "primitive_type": "direct",
+                    "late_phase_delay_s": 0.0,
+                    "excess_path_km": 0.0,
+                    "residual_spread_s": 0.0,
+                    "positive_residual_fraction": 0.0,
+                    "scatter_weight": 0.0,
+                    "frequency_hz": freq,
+                    "beam_energy": clamp01(energy * source_weight),
+                    "phase_coherence": phase_coherence,
+                    "delay_fit": delay_fit,
+                    "array_coherence": array_coherence,
+                    "beam_power": beam_power,
+                    "mean_amplitude_log": mean_amp,
+                    "n_stations": len(stations),
+                    "aperture_km": aperture_km,
+                    "velocity_km_s": config.waveform_array.velocity_km_s,
+                    "velocity_model": velocity_model,
+                    "slowness_x_s_per_km": slowness_x,
+                    "slowness_y_s_per_km": slowness_y,
+                    "frequency_band": frequency_band,
+                    "phase_resultant_rad": phase_result,
+                    "gaussian_splat_sigma_m": splat_sigma_m,
+                    "dominant_source": dominant_source,
+                    "projection_rank": 0,
+                    "projection_method": method,
+                    "is_sample_data": is_sample,
+                }
+            )
+            if config.waveform_array.synthetic_aperture_enabled and config.waveform_array.use_group_delay:
+                late_energy, late_phase, late_delay_s, spread_s, positive_fraction, late_phase_result = _late_phase_metrics(
+                    stations,
+                    gx,
+                    gy,
+                    freq,
+                    velocity_m_s,
+                    config.waveform_array.delay_sigma_s,
+                    config.waveform_array.use_phase,
+                )
+                if late_energy >= 0.08:
+                    path_family, primitive_type = _late_path_family(
+                        late_energy, spread_s, config.waveform_array.delay_sigma_s, positive_fraction
+                    )
+                    late_z_m = _late_projection_depth_m(
+                        z_m,
+                        late_delay_s,
+                        config.waveform_array.velocity_km_s,
+                        config.filters.max_depth_km,
+                    )
+                    excess_path_km = max(0.0, late_delay_s * config.waveform_array.velocity_km_s)
+                    late_sigma = max(
+                        splat_sigma_m,
+                        min(config.waveform_array.resolution_sigma_max_m, splat_sigma_m + 0.25 * excess_path_km * 1000.0),
+                    )
+                    event_candidates.append(
+                        {
+                            "event_id": event_id,
+                            "time_utc": time_utc,
+                            "time_bin_index": time_bin_index,
+                            "time_bin_start_utc": time_bin_start,
+                            "magnitude": float(event.get("magnitude", 0.0) or 0.0),
+                            "depth_km": depth_km,
+                            "x_m": event_x,
+                            "y_m": event_y,
+                            "z_m": z_m,
+                            "projection_x_m": gx,
+                            "projection_y_m": gy,
+                            "projection_z_m": late_z_m,
+                            "path_family": path_family,
+                            "primitive_type": primitive_type,
+                            "late_phase_delay_s": late_delay_s,
+                            "excess_path_km": excess_path_km,
+                            "residual_spread_s": spread_s,
+                            "positive_residual_fraction": positive_fraction,
+                            "scatter_weight": clamp01(late_energy * positive_fraction),
+                            "frequency_hz": freq,
+                            "beam_energy": clamp01(late_energy * source_weight),
+                            "phase_coherence": late_phase,
+                            "delay_fit": clamp01(1.0 / (1.0 + spread_s / max(config.waveform_array.delay_sigma_s, 1e-9))),
+                            "array_coherence": clamp01(late_phase * (0.5 + 0.5 * positive_fraction)),
+                            "beam_power": late_energy * math.log1p(len(stations)) * source_weight * 0.9,
+                            "mean_amplitude_log": mean_amp,
+                            "n_stations": len(stations),
+                            "aperture_km": aperture_km,
+                            "velocity_km_s": config.waveform_array.velocity_km_s,
+                            "velocity_model": velocity_model,
+                            "slowness_x_s_per_km": slowness_x,
+                            "slowness_y_s_per_km": slowness_y,
+                            "frequency_band": f"{freq:g} Hz late-phase window",
+                            "phase_resultant_rad": late_phase_result,
+                            "gaussian_splat_sigma_m": late_sigma,
+                            "dominant_source": dominant_source,
+                            "projection_rank": 0,
+                            "projection_method": "synthetic_aperture_late_phase_reflection_scattering_projection",
+                            "is_sample_data": is_sample,
+                        }
+                    )
+    rows = _select_projection_rows(event_candidates, config.waveform_array.top_projections_per_event)
+    for rank, row in enumerate(rows, start=1):
+        row["projection_rank"] = rank
+    return rows
+
+
 def _count_values(rows: list[dict[str, Any]], key: str) -> dict[str, int]:
     counts: dict[str, int] = defaultdict(int)
     for row in rows:
@@ -551,7 +743,6 @@ def build_waveform_array_projection(
         return _write_empty(paths, "event_table_not_available", is_sample)
 
     start = datetime.combine(config.region.start_date, datetime.min.time(), tzinfo=UTC)
-    projector = LocalProjector(config.region)
     by_event_freq: dict[tuple[str, float], list[dict[str, Any]]] = defaultdict(list)
     time_index = _event_time_index(events)
     for row in spectra_rows:
@@ -574,7 +765,6 @@ def build_waveform_array_projection(
         config.waveform_array.projection_radius_km * 1000.0,
         config.waveform_array.projection_grid_km * 1000.0,
     )
-    velocity_m_s = config.waveform_array.velocity_km_s * 1000.0
     projection_rows: list[dict[str, Any]] = []
 
     grouped: dict[str, list[tuple[float, list[dict[str, Any]]]]] = defaultdict(list)
@@ -582,174 +772,34 @@ def build_waveform_array_projection(
         if event_id in allowed_events and freq > 0.0:
             grouped[event_id].append((freq, rows))
 
-    for event_id in event_order:
-        event = events[event_id]
-        event_candidates: list[dict[str, Any]] = []
-        event_x = float(event.get("x_m", 0.0) or 0.0)
-        event_y = float(event.get("y_m", 0.0) or 0.0)
-        depth_km = float(event.get("depth_km", 0.0) or 0.0)
-        z_m = float(event.get("z_m", depth_km * 1000.0) or 0.0)
-        time_utc = str(event.get("time_utc", ""))
-        time_bin_index, time_bin_start = _time_bin(time_utc, start, config.waveform_array.time_bin_days)
-        for freq, rows in sorted(grouped[event_id], key=lambda item: item[0]):
-            stations = _station_rows(rows, projector, config.waveform_array.max_stations_per_event)
-            if len(stations) < config.waveform_array.min_stations:
-                continue
-            mean_amp = sum(float(st["log_amplitude"]) for st in stations) / len(stations)
-            dominant_source = _dominant_source(rows)
-            source_weight = _source_weight(config, dominant_source)
-            aperture_km = _station_aperture_km(stations)
-            splat_sigma_m = _resolution_sigma_m(config, freq, aperture_km)
-            frequency_band = f"{freq:g} Hz point spectrum"
-            velocity_model = f"homogeneous_{config.waveform_array.velocity_km_s:g}_km_s"
-            method = (
-                "synthetic_aperture_delay_sum_phase_group_delay_projection"
-                if config.waveform_array.synthetic_aperture_enabled
-                else "delay_and_sum_phase_group_delay_projection"
-            )
-            for dx, dy in offsets:
-                gx = event_x + dx
-                gy = event_y + dy
-                energy, phase_coherence, delay_fit, phase_result = _score_candidate(
-                    stations,
-                    gx,
-                    gy,
-                    freq,
-                    velocity_m_s,
-                    config.waveform_array.delay_sigma_s,
-                    config.waveform_array.use_phase,
-                    config.waveform_array.use_group_delay,
-                )
-                if config.waveform_array.use_phase and config.waveform_array.use_group_delay:
-                    array_coherence = clamp01(phase_coherence * delay_fit)
-                elif config.waveform_array.use_phase:
-                    array_coherence = clamp01(phase_coherence)
-                elif config.waveform_array.use_group_delay:
-                    array_coherence = clamp01(delay_fit)
-                else:
-                    array_coherence = clamp01(energy)
-                beam_power = max(0.0, energy) * math.log1p(len(stations)) * source_weight
-                slowness_x, slowness_y = _slowness_vector_s_per_km(
-                    event_x, event_y, gx, gy, config.waveform_array.velocity_km_s
-                )
-                event_candidates.append(
-                    {
-                        "event_id": event_id,
-                        "time_utc": time_utc,
-                        "time_bin_index": time_bin_index,
-                        "time_bin_start_utc": time_bin_start,
-                        "magnitude": float(event.get("magnitude", 0.0) or 0.0),
-                        "depth_km": depth_km,
-                        "x_m": event_x,
-                        "y_m": event_y,
-                        "z_m": z_m,
-                        "projection_x_m": gx,
-                        "projection_y_m": gy,
-                        "projection_z_m": z_m,
-                        "path_family": "direct",
-                        "primitive_type": "direct",
-                        "late_phase_delay_s": 0.0,
-                        "excess_path_km": 0.0,
-                        "residual_spread_s": 0.0,
-                        "positive_residual_fraction": 0.0,
-                        "scatter_weight": 0.0,
-                        "frequency_hz": freq,
-                        "beam_energy": clamp01(energy * source_weight),
-                        "phase_coherence": phase_coherence,
-                        "delay_fit": delay_fit,
-                        "array_coherence": array_coherence,
-                        "beam_power": beam_power,
-                        "mean_amplitude_log": mean_amp,
-                        "n_stations": len(stations),
-                        "aperture_km": aperture_km,
-                        "velocity_km_s": config.waveform_array.velocity_km_s,
-                        "velocity_model": velocity_model,
-                        "slowness_x_s_per_km": slowness_x,
-                        "slowness_y_s_per_km": slowness_y,
-                        "frequency_band": frequency_band,
-                        "phase_resultant_rad": phase_result,
-                        "gaussian_splat_sigma_m": splat_sigma_m,
-                        "dominant_source": dominant_source,
-                        "projection_rank": 0,
-                        "projection_method": method,
-                        "is_sample_data": is_sample,
-                    }
-                )
-                if config.waveform_array.synthetic_aperture_enabled and config.waveform_array.use_group_delay:
-                    late_energy, late_phase, late_delay_s, spread_s, positive_fraction, late_phase_result = _late_phase_metrics(
-                        stations,
-                        gx,
-                        gy,
-                        freq,
-                        velocity_m_s,
-                        config.waveform_array.delay_sigma_s,
-                        config.waveform_array.use_phase,
-                    )
-                    if late_energy >= 0.08:
-                        path_family, primitive_type = _late_path_family(
-                            late_energy, spread_s, config.waveform_array.delay_sigma_s, positive_fraction
-                        )
-                        late_z_m = _late_projection_depth_m(
-                            z_m,
-                            late_delay_s,
-                            config.waveform_array.velocity_km_s,
-                            config.filters.max_depth_km,
-                        )
-                        excess_path_km = max(0.0, late_delay_s * config.waveform_array.velocity_km_s)
-                        late_sigma = max(
-                            splat_sigma_m,
-                            min(config.waveform_array.resolution_sigma_max_m, splat_sigma_m + 0.25 * excess_path_km * 1000.0),
-                        )
-                        event_candidates.append(
-                            {
-                                "event_id": event_id,
-                                "time_utc": time_utc,
-                                "time_bin_index": time_bin_index,
-                                "time_bin_start_utc": time_bin_start,
-                                "magnitude": float(event.get("magnitude", 0.0) or 0.0),
-                                "depth_km": depth_km,
-                                "x_m": event_x,
-                                "y_m": event_y,
-                                "z_m": z_m,
-                                "projection_x_m": gx,
-                                "projection_y_m": gy,
-                                "projection_z_m": late_z_m,
-                                "path_family": path_family,
-                                "primitive_type": primitive_type,
-                                "late_phase_delay_s": late_delay_s,
-                                "excess_path_km": excess_path_km,
-                                "residual_spread_s": spread_s,
-                                "positive_residual_fraction": positive_fraction,
-                                "scatter_weight": clamp01(late_energy * positive_fraction),
-                                "frequency_hz": freq,
-                                "beam_energy": clamp01(late_energy * source_weight),
-                                "phase_coherence": late_phase,
-                                "delay_fit": clamp01(1.0 / (1.0 + spread_s / max(config.waveform_array.delay_sigma_s, 1e-9))),
-                                "array_coherence": clamp01(late_phase * (0.5 + 0.5 * positive_fraction)),
-                                "beam_power": late_energy * math.log1p(len(stations)) * source_weight * 0.9,
-                                "mean_amplitude_log": mean_amp,
-                                "n_stations": len(stations),
-                                "aperture_km": aperture_km,
-                                "velocity_km_s": config.waveform_array.velocity_km_s,
-                                "velocity_model": velocity_model,
-                                "slowness_x_s_per_km": slowness_x,
-                                "slowness_y_s_per_km": slowness_y,
-                                "frequency_band": f"{freq:g} Hz late-phase window",
-                                "phase_resultant_rad": late_phase_result,
-                                "gaussian_splat_sigma_m": late_sigma,
-                                "dominant_source": dominant_source,
-                                "projection_rank": 0,
-                                "projection_method": "synthetic_aperture_late_phase_reflection_scattering_projection",
-                                "is_sample_data": is_sample,
-                            }
-                        )
-        for rank, row in enumerate(_select_projection_rows(event_candidates, config.waveform_array.top_projections_per_event), start=1):
-            row["projection_rank"] = rank
-            projection_rows.append(row)
+    tasks = [
+        (config, event_id, events[event_id], grouped[event_id], offsets, start, is_sample)
+        for event_id in event_order
+        if grouped.get(event_id)
+    ]
+    worker_count = _available_worker_count(len(tasks))
+    LOGGER.info(
+        "Array projection candidate generation: events=%d frequency_groups=%d offsets=%d workers=%d max_rows=%d",
+        len(tasks),
+        sum(len(grouped[event_id]) for event_id in event_order if grouped.get(event_id)),
+        len(offsets),
+        worker_count,
+        config.waveform_array.max_projection_rows,
+    )
+    if worker_count > 1:
+        chunksize = max(1, len(tasks) // max(1, worker_count * 8))
+        with ProcessPoolExecutor(max_workers=worker_count) as executor:
+            projected_iter = executor.map(_project_event_task, tasks, chunksize=chunksize)
+            for event_rows in projected_iter:
+                projection_rows.extend(event_rows)
+                if len(projection_rows) >= config.waveform_array.max_projection_rows:
+                    break
+    else:
+        for task in tasks:
+            projection_rows.extend(_project_event_task(task))
             if len(projection_rows) >= config.waveform_array.max_projection_rows:
                 break
-        if len(projection_rows) >= config.waveform_array.max_projection_rows:
-            break
+    projection_rows = projection_rows[: config.waveform_array.max_projection_rows]
 
     write_table(
         projection_rows,
@@ -767,6 +817,7 @@ def build_waveform_array_projection(
             "resolution_sigma_min_m": config.waveform_array.resolution_sigma_min_m,
             "resolution_sigma_max_m": config.waveform_array.resolution_sigma_max_m,
             "hinet_source_boost": config.waveform_array.hinet_source_boost,
+            "array_projection_workers": worker_count,
         },
     )
     materialize_file(paths, "waveform_array_projection", projection_path)
@@ -808,6 +859,7 @@ def build_waveform_array_projection(
         "resolution_sigma_min_m": config.waveform_array.resolution_sigma_min_m,
         "resolution_sigma_max_m": config.waveform_array.resolution_sigma_max_m,
         "hinet_source_boost": config.waveform_array.hinet_source_boost,
+        "array_projection_workers": worker_count,
         "uses_phase": config.waveform_array.use_phase,
         "uses_group_delay": config.waveform_array.use_group_delay,
         "not_prediction": True,

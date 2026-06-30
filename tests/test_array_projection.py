@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from pathlib import Path
+from shutil import copy2, copytree
+
 from crust_lite.cli import (
     command_array_projection,
     command_build_features,
@@ -11,8 +14,19 @@ from crust_lite.io.parquet import read_sidecar, read_table
 from crust_lite.paths import ProjectPaths
 
 
-def test_sample_waveform_array_projection_outputs() -> None:
-    config_path = "configs/kumamoto.yml"
+def _sample_project(tmp_path: Path) -> Path:
+    repo_root = Path(__file__).resolve().parents[1]
+    config_dir = tmp_path / "configs"
+    sample_dir = tmp_path / "data" / "raw" / "sample"
+    config_dir.mkdir(parents=True)
+    sample_dir.parent.mkdir(parents=True)
+    copy2(repo_root / "configs" / "kumamoto.yml", config_dir / "kumamoto.yml")
+    copytree(repo_root / "data" / "raw" / "sample", sample_dir)
+    return config_dir / "kumamoto.yml"
+
+
+def test_sample_waveform_array_projection_outputs(tmp_path: Path) -> None:
+    config_path = str(_sample_project(tmp_path))
     command_fetch(config_path, sample=True)
     command_build_features(config_path)
     command_transfer_functions(config_path, sample=True)
@@ -66,7 +80,8 @@ def test_sample_waveform_array_projection_outputs() -> None:
     assert "webgl2_gaussian_point_sprite" in html_text
     assert "getContext('webgl2'" in html_text
     webgl_meta = paths.outputs_3d.joinpath("array_projection_splats.metadata.json").read_text(encoding="utf-8")
-    assert "webgl_synthetic_context_surface_with_high_density_japan_outline" in webgl_meta
+    assert "outline-only Japan context" in webgl_meta
+    assert "disabled_to_avoid_hiding_subsurface_splats" in webgl_meta
     meta = read_sidecar(paths.data_processed / "waveform_array_projection.parquet")
     assert meta["synthetic_aperture_enabled"] is True
     assert meta["uses_phase"] is True

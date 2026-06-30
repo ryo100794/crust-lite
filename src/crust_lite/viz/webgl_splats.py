@@ -32,19 +32,6 @@ def _round(value: Any, digits: int = 3) -> float:
     return round(number, digits)
 
 
-def _point_in_polygon(x: float, y: float, polygon: list[tuple[float, float]]) -> bool:
-    inside = False
-    j = len(polygon) - 1
-    for i, (xi, yi) in enumerate(polygon):
-        xj, yj = polygon[j]
-        denom = yj - yi
-        if abs(denom) < 1e-12:
-            denom = 1e-12
-        if ((yi > y) != (yj > y)) and (x < (xj - xi) * (y - yi) / denom + xi):
-            inside = not inside
-        j = i
-    return inside
-
 
 def _catmull_rom(p0: tuple[float, float], p1: tuple[float, float], p2: tuple[float, float], p3: tuple[float, float], t: float) -> tuple[float, float]:
     t2 = t * t
@@ -79,7 +66,7 @@ def _densify_outline(coords: list[tuple[float, float]], samples_per_segment: int
         p2 = base[(i + 1) % n]
         p3 = base[(i + 2) % n] if closed or i + 2 < n else base[-1]
         segment_len = math.hypot(p2[0] - p1[0], p2[1] - p1[1])
-        samples = max(samples_per_segment, int(math.ceil(segment_len / 0.018)))
+        samples = max(samples_per_segment, int(math.ceil(segment_len / 0.006)))
         for step in range(samples):
             dense.append(_catmull_rom(p0, p1, p2, p3, step / samples))
     if closed:
@@ -89,67 +76,37 @@ def _densify_outline(coords: list[tuple[float, float]], samples_per_segment: int
     return dense
 
 
-def _synthetic_relief_m(lon: float, lat: float, is_land: bool) -> float:
-    ridge = 850.0 * math.exp(-((lon - 138.0) / 3.8) ** 2 - ((lat - 36.7) / 2.5) ** 2)
-    northeast = 420.0 * math.exp(-((lon - 140.6) / 2.6) ** 2 - ((lat - 39.3) / 2.2) ** 2)
-    southwest = 360.0 * math.exp(-((lon - 131.2) / 2.7) ** 2 - ((lat - 33.0) / 1.8) ** 2)
-    roughness = 120.0 * math.sin(lon * 1.7) * math.cos(lat * 1.3)
-    if is_land:
-        return max(20.0, ridge + northeast + southwest + roughness)
-    trench = -900.0 * math.exp(-((lon - 143.5) / 2.6) ** 2 - ((lat - 38.2) / 4.4) ** 2)
-    ocean = -120.0 - 180.0 * max(0.0, lon - 137.0) / 18.0
-    return min(-20.0, ocean + trench)
-
-
 def _terrain_payload(config: AppConfig, is_sample: bool) -> dict[str, Any]:
+    """Return outline-only context geometry.
+
+    The splat preview intentionally avoids filled land/sea/terrain surfaces.
+    Filled surfaces hide subsurface splats and make the view look like a flat
+    map plate. The 3D context is therefore only high-density coastline traces
+    projected into the configured local CRS at z=0.
+    """
     projector = LocalProjector(config.region)
     outlines = local_context_outlines(config.region.bbox, margin_deg=3.0)
-    samples_per_segment = 6 if is_sample else 18
+    samples_per_segment = 12 if is_sample else 160
     dense_outlines = [
         {"name": outline["name"], "coordinates": _densify_outline(outline["coordinates"], samples_per_segment=samples_per_segment)}
         for outline in outlines
     ]
-    min_lon, min_lat, max_lon, max_lat = config.region.bbox
-    nx = 64 if is_sample else 180
-    ny = 48 if is_sample else 140
-    lons = [min_lon + (max_lon - min_lon) * i / (nx - 1) for i in range(nx)]
-    lats = [min_lat + (max_lat - min_lat) * j / (ny - 1) for j in range(ny)]
-    polygons = [outline["coordinates"] for outline in dense_outlines if len(outline["coordinates"]) >= 3]
-    positions: list[float] = []
-    colors: list[float] = []
-    for lat in lats:
-        for lon in lons:
-            x_m, y_m = projector.lonlat_to_xy(lon, lat)
-            is_land = any(_point_in_polygon(lon, lat, polygon) for polygon in polygons)
-            relief = _synthetic_relief_m(lon, lat, is_land)
-            positions.extend([_round(x_m), _round(y_m), _round(relief)])
-            if is_land:
-                colors.extend([0.38, 0.58, 0.34])
-            else:
-                colors.extend([0.10, 0.34, 0.52])
-    indices: list[int] = []
-    for j in range(ny - 1):
-        for i in range(nx - 1):
-            a = j * nx + i
-            b = a + 1
-            c = a + nx
-            d = c + 1
-            indices.extend([a, b, c, b, d, c])
     outline_payload = []
     for outline in dense_outlines:
         flat: list[float] = []
         for lon, lat in outline["coordinates"]:
             x_m, y_m = projector.lonlat_to_xy(lon, lat)
-            flat.extend([_round(x_m), _round(y_m), 220.0])
+            flat.extend([_round(x_m), _round(y_m), 0.0])
         outline_payload.append({"name": outline["name"], "positions": flat})
     return {
-        "nx": nx,
-        "ny": ny,
-        "positions": positions,
-        "colors": colors,
-        "indices": indices,
+        "nx": 0,
+        "ny": 0,
+        "positions": [],
+        "colors": [],
+        "indices": [],
         "outlines": outline_payload,
         "outline_vertices": sum(len(outline["positions"]) // 3 for outline in outline_payload),
+        "surface_enabled": False,
     }
 
 
@@ -206,13 +163,18 @@ def _splat_payload(config: AppConfig, rows: list[dict[str, Any]]) -> dict[str, A
 
 def _bounds_from_payload(splats: dict[str, Any], terrain: dict[str, Any]) -> dict[str, float]:
     values = [splats["positions"], terrain["positions"]]
+    values.extend(outline["positions"] for outline in terrain.get("outlines", []))
     xs: list[float] = []
     ys: list[float] = []
     zs: list[float] = []
     for flat in values:
+        if not flat:
+            continue
         xs.extend(flat[0::3])
         ys.extend(flat[1::3])
         zs.extend(flat[2::3])
+    if not xs:
+        xs = ys = zs = [0.0]
     return {
         "min_x": min(xs),
         "max_x": max(xs),
@@ -229,11 +191,11 @@ def _webgl_html(payload: dict[str, Any]) -> str:
 <html lang="ja">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
   <title>crust-lite WebGL Gaussian splats</title>
   <style>
     html, body {{ margin: 0; width: 100%; height: 100%; overflow: hidden; background: #071015; color: #e5eef5; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }}
-    #gl {{ width: 100vw; height: 100vh; display: block; }}
+    #gl {{ width: 100vw; height: 100vh; display: block; touch-action: none; }}
     #hud {{ position: fixed; left: 12px; top: 10px; max-width: 520px; background: rgba(7, 16, 21, 0.78); border: 1px solid rgba(180, 205, 220, 0.32); padding: 10px 12px; font-size: 13px; line-height: 1.35; backdrop-filter: blur(5px); }}
     #hud h1 {{ font-size: 16px; margin: 0 0 6px; }}
     #hud label {{ margin-right: 10px; white-space: nowrap; }}
@@ -245,7 +207,7 @@ def _webgl_html(payload: dict[str, Any]) -> str:
 <body>
 <canvas id="gl"></canvas>
 <div id="hud">
-  <h1>WebGL Gaussian splats + high-density Japan outline</h1>
+  <h1>WebGL Gaussian splats + outline-only Japan context</h1>
   <div class="notice">研究用の状態表示です。地震の発生日・場所・規模を断定的に予測するものではありません。</div>
   <div id="stats"></div>
   <div>
@@ -255,15 +217,14 @@ def _webgl_html(payload: dict[str, Any]) -> str:
     <label><input type="checkbox" data-type="3" checked><span class="swatch" style="background:#a0a0a0"></span>residual</label>
   </div>
   <div>
-    <label><input id="terrainToggle" type="checkbox" checked>terrain</label>
     <label><input id="outlineToggle" type="checkbox" checked>Japan outline</label>
     <label><input id="lineToggle" type="checkbox" checked>source lines</label>
   </div>
   <div>
-    splat scale <input id="scaleSlider" type="range" min="0.25" max="4" step="0.05" value="1.25">
+    splat scale <input id="scaleSlider" type="range" min="0.25" max="8" step="0.05" value="1.45">
     opacity <input id="opacitySlider" type="range" min="0.15" max="2.5" step="0.05" value="1.0">
   </div>
-  <div>drag: rotate / wheel: zoom / shift+drag: pan</div>
+  <div>drag: rotate / wheel or pinch: zoom / shift+drag or two-finger drag: pan</div>
 </div>
 <script id="payload" type="application/json">{json_text}</script>
 <script>
@@ -272,7 +233,7 @@ const canvas = document.getElementById('gl');
 const gl = canvas.getContext('webgl2', {{antialias: true, alpha: false}});
 if (!gl) throw new Error('WebGL2 is required');
 document.getElementById('stats').textContent =
-  `splats=${{payload.metadata.displayed_splats}} / terrain=${{payload.terrain.nx}}x${{payload.terrain.ny}} / outline vertices=${{payload.terrain.outline_vertices}} / renderer=${{payload.metadata.renderer}}`;
+  `splats=${{payload.metadata.displayed_splats}} / surface=off / outline vertices=${{payload.terrain.outline_vertices}} / renderer=${{payload.metadata.renderer}}`;
 
 function shader(type, src) {{
   const s = gl.createShader(type);
@@ -298,7 +259,7 @@ void main() {{
   vec4 clip = u_mvp * vec4(a_pos, 1.0);
   gl_Position = clip;
   float perspectiveScale = clamp(1.0 / max(0.25, clip.w), 0.35, 3.0);
-  gl_PointSize = clamp(a_size * u_pointScale * perspectiveScale, 2.0, 128.0);
+  gl_PointSize = clamp(a_size * u_pointScale * perspectiveScale, 2.0, 384.0);
   v_color = a_color; v_opacity = a_opacity; v_type = a_type;
 }}`;
 const splatFS = `#version 300 es
@@ -348,7 +309,7 @@ function normPositions(src) {{
 }}
 function normSizes(src) {{
   const out = new Float32Array(src.length);
-  for (let i=0; i<src.length; i++) out[i] = Math.max(3.0, Math.min(80.0, src[i] / span * 1800.0));
+  for (let i=0; i<src.length; i++) out[i] = Math.max(3.0, Math.min(140.0, src[i] / span * 2600.0));
   return out;
 }}
 function buf(data, target=gl.ARRAY_BUFFER) {{
@@ -397,19 +358,36 @@ function lookAt(eye, target, up) {{
   o[12]=-(xx*eye[0]+xy*eye[1]+xz*eye[2]); o[13]=-(yx*eye[0]+yy*eye[1]+yz*eye[2]); o[14]=-(zx*eye[0]+zy*eye[1]+zz*eye[2]);
   return o;
 }}
-let yaw=0.72, pitch=0.46, dist=3.2, pan=[0,0,0], dragging=false, last=[0,0], panning=false;
-let visible=[1,1,1,1], showTerrain=true, showOutlines=true, showLines=true, splatScale=1.25, opacityScale=1.0;
+let yaw=0.72, pitch=0.46, dist=3.2, pan=[0,0,0];
+let visible=[1,1,1,1], showTerrain=false, showOutlines=true, showLines=true, splatScale=1.45, opacityScale=1.0;
+const pointers = new Map();
+let lastCentroid = null, lastPinchDistance = 0, lastPointer = null, panning = false;
 function mvp() {{
   const eye=[dist*Math.cos(pitch)*Math.sin(yaw)+pan[0], dist*Math.cos(pitch)*Math.cos(yaw)+pan[1], dist*Math.sin(pitch)+pan[2]];
   return mat4mul(perspective(45*Math.PI/180, canvas.width/canvas.height, 0.01, 100.0), lookAt(eye, pan, [0,0,1]));
 }}
-function resize() {{ const dpr=Math.min(devicePixelRatio||1,2); canvas.width=Math.floor(innerWidth*dpr); canvas.height=Math.floor(innerHeight*dpr); gl.viewport(0,0,canvas.width,canvas.height); render(); }}
+function resize() {{ const dpr=Math.min(devicePixelRatio||1,4); canvas.width=Math.floor(innerWidth*dpr); canvas.height=Math.floor(innerHeight*dpr); gl.viewport(0,0,canvas.width,canvas.height); render(); }}
+function pointerCentroid() {{
+  let x=0, y=0;
+  for (const p of pointers.values()) {{ x += p.x; y += p.y; }}
+  const n = Math.max(1, pointers.size);
+  return [x/n, y/n];
+}}
+function pointerDistance() {{
+  const pts = Array.from(pointers.values());
+  if (pts.length < 2) return 0;
+  return Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+}}
+function panBy(dx, dy) {{
+  pan[0] -= dx / 420;
+  pan[2] += dy / 420;
+}}
 function render() {{
   gl.clearColor(0.027,0.063,0.082,1); gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
   gl.enable(gl.DEPTH_TEST); gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
   const matrix=mvp();
   if (showTerrain) {{
-    gl.useProgram(meshProg); gl.uniformMatrix4fv(gl.getUniformLocation(meshProg,'u_mvp'), false, matrix); gl.uniform1f(gl.getUniformLocation(meshProg,'u_alpha'), 0.52);
+    gl.useProgram(meshProg); gl.uniformMatrix4fv(gl.getUniformLocation(meshProg,'u_mvp'), false, matrix); gl.uniform1f(gl.getUniformLocation(meshProg,'u_alpha'), 0.0);
     attrib(meshProg,'a_pos',terrain.pos,3); attrib(meshProg,'a_color',terrain.color,3); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, terrain.idx); gl.drawElements(gl.TRIANGLES, terrain.n, gl.UNSIGNED_INT, 0);
   }}
   gl.useProgram(lineProg); gl.uniformMatrix4fv(gl.getUniformLocation(lineProg,'u_mvp'), false, matrix); gl.lineWidth(1);
@@ -430,12 +408,49 @@ function render() {{
   attrib(splatProg,'a_pos',splat.pos,3); attrib(splatProg,'a_color',splat.color,3); attrib(splatProg,'a_size',splat.size,1); attrib(splatProg,'a_opacity',splat.opacity,1); attrib(splatProg,'a_type',splat.type,1);
   gl.drawArrays(gl.POINTS,0,splat.n); gl.depthMask(true);
 }}
-canvas.addEventListener('mousedown', e => {{ dragging=true; panning=e.shiftKey; last=[e.clientX,e.clientY]; }});
-addEventListener('mouseup', () => dragging=false);
-addEventListener('mousemove', e => {{ if(!dragging)return; const dx=e.clientX-last[0], dy=e.clientY-last[1]; last=[e.clientX,e.clientY]; if(panning){{pan[0]-=dx/420;pan[2]+=dy/420;}}else{{yaw+=dx*0.006; pitch=Math.max(-1.25,Math.min(1.25,pitch+dy*0.006));}} render(); }});
+canvas.addEventListener('pointerdown', e => {{
+  e.preventDefault();
+  canvas.setPointerCapture(e.pointerId);
+  pointers.set(e.pointerId, {{x:e.clientX, y:e.clientY}});
+  panning = e.shiftKey || pointers.size >= 2;
+  lastPointer = [e.clientX, e.clientY];
+  lastCentroid = pointerCentroid();
+  lastPinchDistance = pointerDistance();
+}}, {{passive:false}});
+canvas.addEventListener('pointermove', e => {{
+  if (!pointers.has(e.pointerId)) return;
+  e.preventDefault();
+  pointers.set(e.pointerId, {{x:e.clientX, y:e.clientY}});
+  if (pointers.size >= 2) {{
+    const centroid = pointerCentroid();
+    const pinchDistance = pointerDistance();
+    if (lastCentroid) panBy(centroid[0] - lastCentroid[0], centroid[1] - lastCentroid[1]);
+    if (lastPinchDistance > 0 && pinchDistance > 0) dist = Math.max(0.55, Math.min(12, dist * (lastPinchDistance / pinchDistance)));
+    lastCentroid = centroid;
+    lastPinchDistance = pinchDistance;
+  }} else if (lastPointer) {{
+    const dx = e.clientX - lastPointer[0], dy = e.clientY - lastPointer[1];
+    lastPointer = [e.clientX, e.clientY];
+    if (panning || e.shiftKey) panBy(dx, dy);
+    else {{
+      yaw += dx * 0.006;
+      pitch = Math.max(-1.25, Math.min(1.25, pitch + dy * 0.006));
+    }}
+  }}
+  render();
+}}, {{passive:false}});
+function endPointer(e) {{
+  if (pointers.has(e.pointerId)) pointers.delete(e.pointerId);
+  lastPointer = null;
+  lastCentroid = pointers.size ? pointerCentroid() : null;
+  lastPinchDistance = pointerDistance();
+  panning = pointers.size >= 2;
+}}
+canvas.addEventListener('pointerup', endPointer);
+canvas.addEventListener('pointercancel', endPointer);
+canvas.addEventListener('lostpointercapture', endPointer);
 canvas.addEventListener('wheel', e => {{ e.preventDefault(); dist=Math.max(0.55,Math.min(12,dist*Math.exp(e.deltaY*0.001))); render(); }}, {{passive:false}});
 document.querySelectorAll('input[data-type]').forEach(el => el.addEventListener('change', e => {{ visible[Number(e.target.dataset.type)] = e.target.checked ? 1 : 0; render(); }}));
-document.getElementById('terrainToggle').addEventListener('change', e => {{ showTerrain=e.target.checked; render(); }});
 document.getElementById('outlineToggle').addEventListener('change', e => {{ showOutlines=e.target.checked; render(); }});
 document.getElementById('lineToggle').addEventListener('change', e => {{ showLines=e.target.checked; render(); }});
 document.getElementById('scaleSlider').addEventListener('input', e => {{ splatScale=Number(e.target.value); render(); }});
@@ -449,7 +464,7 @@ addEventListener('resize', resize); resize();
 
 def write_webgl_splat_preview(config: AppConfig, paths: ProjectPaths, rows: list[dict[str, Any]], is_sample: bool) -> None:
     paths.outputs_3d.mkdir(parents=True, exist_ok=True)
-    limit_rows = rows[: min(len(rows), 100_000)]
+    limit_rows = rows[: min(len(rows), 250_000)]
     splats = _splat_payload(config, limit_rows)
     terrain = _terrain_payload(config, is_sample=is_sample)
     metadata = {
@@ -466,12 +481,16 @@ def write_webgl_splat_preview(config: AppConfig, paths: ProjectPaths, rows: list
         "uses_group_delay": config.waveform_array.use_group_delay,
         "primitive_type_counts": _count_values(rows, "primitive_type"),
         "path_family_counts": _count_values(rows, "path_family"),
-        "terrain_overlay": "webgl_synthetic_context_surface_with_high_density_japan_outline",
+        "terrain_overlay": "disabled_surface_outline_only",
         "terrain_grid": {"nx": terrain["nx"], "ny": terrain["ny"]},
+        "canvas_device_pixel_ratio_max": 4,
+        "point_sprite_max_px": 384,
+        "touch_controls": "pointer_events_one_finger_rotate_two_finger_pan_pinch_zoom",
         "japan_outline_vertices": terrain["outline_vertices"],
-        "japan_outline_resolution": "catmull_rom_densified_offline_outline_for_display_context",
+        "japan_outline_resolution": "catmull_rom_densified_offline_outline_only_160_samples_per_segment",
+        "surface_rendering": "disabled_to_avoid_hiding_subsurface_splats",
         "sample_lightweight_rendering": is_sample,
-        "rendering": "WebGL2 point-sprite Gaussian splats over terrain context; not Plotly mesh ellipsoids",
+        "rendering": "WebGL2 high-density point-sprite Gaussian splats with outline-only Japan context; not Plotly mesh ellipsoids",
         "not_prediction": True,
     }
     payload = {
