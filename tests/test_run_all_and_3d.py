@@ -25,13 +25,16 @@ def test_run_all_sample_and_3d_outputs() -> None:
     ]:
         assert path.exists()
     text = events_html.read_text(encoding="utf-8")
-    assert "Plotly.newPlot" in text
+    assert "webgl2_event_fault_point_sprite" in text
+    assert "getContext('webgl2'" in text
     assert "is_sample_data=true" in text
     assert "map overlay" in text
     failure_text = failure_html.read_text(encoding="utf-8")
     assert "地震発生" not in failure_text
     meta = read_metadata(metadata_json)
     assert meta["displayed_event_count"] > 0
+    assert meta["actual_time_bin_days"] == 1
+    assert meta["playback_frame_interval_ms"] == 80
     assert meta["map_overlay"] == "local_crs_bbox_graticule_surface_with_japan_archipelago_outline"
     assert meta["japan_context_file"] == "japan_archipelago_context.html"
     assert "Japan archipelago" in japan_html.read_text(encoding="utf-8")

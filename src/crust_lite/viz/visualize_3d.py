@@ -17,6 +17,7 @@ from crust_lite.logging import get_logger
 from crust_lite.paths import ProjectPaths
 from crust_lite.viz.html_timeseries import fallback_plotly_html, wrap_plotly_html, write_index
 from crust_lite.viz.japan_outline import JAPAN_ARCHIPELAGO_OUTLINES, local_context_outlines
+from crust_lite.viz.webgl_events import write_webgl_events_faults
 
 LOGGER = get_logger(__name__)
 
@@ -541,95 +542,7 @@ def _write_figure(path: Path, fig: Any, title: str, cfg: AppConfig, metadata: di
 
 
 def write_events_faults_3d(cfg: AppConfig, paths: ProjectPaths, metadata: dict[str, Any], mode: str | None = None, time_bin_days: int | None = None, max_events: int | None = None) -> None:
-    go = _load_plotly()
-    out = paths.outputs_3d / "events_faults_timeseries.html"
-    if go is None:
-        out.write_text(fallback_plotly_html("Events and faults 3D time series", metadata), encoding="utf-8")
-        return
-    events = read_table(paths.data_interim / "event_qc.parquet")
-    selected_events, event_decimation = _select_events(events, max_events or cfg.visualization_3d.max_events)
-    labels, bins, actual_bin, frame_decimation = _bin_events(
-        selected_events, time_bin_days or cfg.visualization_3d.time_bin_days, cfg.visualization_3d.max_frames
-    )
-    display_mode = mode or cfg.visualization_3d.mode
-
-    sorted_labels = list(labels)
-    event_rows_by_label: dict[str, list[dict[str, Any]]] = {}
-    cumulative_rows: list[dict[str, Any]] = []
-    for label in sorted_labels:
-        current = bins[label]
-        if display_mode == "cumulative":
-            cumulative_rows = [*cumulative_rows, *current]
-            event_rows_by_label[label] = list(cumulative_rows)
-        else:
-            event_rows_by_label[label] = list(current)
-
-    initial_label = sorted_labels[0] if sorted_labels else "no_events"
-    traces = [_event_trace(go, event_rows_by_label.get(initial_label, []), cfg, "events (animated)", True)]
-    known = read_features(paths.data_processed / "fault_segment.gpkg") if (
-        paths.data_processed / "fault_segment.gpkg"
-    ).exists() else []
-    inferred = read_features(paths.data_processed / "inferred_faults.gpkg") if (
-        paths.data_processed / "inferred_faults.gpkg"
-    ).exists() else []
-    faults, fault_decimation = _limit_faults(known + inferred, cfg.visualization_3d.max_fault_segments)
-    for feature in faults:
-        props = feature.get("properties", {})
-        is_inferred = str(props.get("is_inferred", "")).lower() == "true" or props.get("is_inferred") is True
-        if is_inferred and not cfg.visualization_3d.show_inferred_faults:
-            continue
-        if not is_inferred and not cfg.visualization_3d.show_known_faults:
-            continue
-        value = float(props.get(cfg.visualization_3d.color_faults_by, props.get("confidence", 0.5)))
-        traces.append(
-            _fault_mesh_trace(
-                go,
-                feature,
-                cfg,
-                value,
-                f"{'inferred' if is_inferred else 'known'} {props.get('segment_id')}",
-                True,
-            )
-        )
-    traces.extend(_gnss_traces(go, cfg, paths))
-    traces.extend(_map_overlay_traces(go, cfg))
-
-    frames = [
-        go.Frame(name=label, data=[_event_trace(go, event_rows_by_label.get(label, []), cfg, "events (animated)", True)], traces=[0])
-        for label in sorted_labels
-    ]
-    sliders, buttons = _animation_controls(sorted_labels)
-    fig = go.Figure(data=traces, frames=frames, layout=_layout("Events, known faults, inferred faults", sliders, buttons))
-    fig.update_layout(
-        annotations=[
-            {
-                "text": f"animation_mode={display_mode}; one animated event trace is replaced each frame, so old frames do not remain as residue.",
-                "xref": "paper",
-                "yref": "paper",
-                "x": 0.01,
-                "y": 0.98,
-                "showarrow": False,
-                "align": "left",
-                "bgcolor": "rgba(255,255,255,0.86)",
-                "bordercolor": "#cbd5e1",
-            }
-        ]
-    )
-    _write_figure(out, fig, "Events and faults 3D time series", cfg, metadata)
-    metadata.update(
-        {
-            "original_event_count": len(events),
-            "displayed_event_count": len(selected_events),
-            "original_fault_count": len(known) + len(inferred),
-            "displayed_fault_count": len(faults),
-            "original_frame_count": max(1, len(sorted_labels)),
-            "displayed_frame_count": len(sorted_labels),
-            "actual_time_bin_days": actual_bin,
-            "decimation_method": ", ".join(sorted({event_decimation, frame_decimation, fault_decimation})),
-            "animation_frame_strategy": "single_event_trace_replaced_per_frame",
-            "camera_persistence": "layout.uirevision=crust-lite-camera",
-        }
-    )
+    write_webgl_events_faults(cfg, paths, metadata, mode=mode, time_bin_days=time_bin_days, max_events=max_events)
 
 def write_stress_3d(cfg: AppConfig, paths: ProjectPaths, metadata: dict[str, Any]) -> None:
     go = _load_plotly()
