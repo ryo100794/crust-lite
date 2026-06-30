@@ -74,6 +74,7 @@ class WaveformArrayConfig:
     projection_radius_km: float = 80.0
     velocity_km_s: float = 3.5
     delay_sigma_s: float = 0.35
+    late_phase_max_delay_s: float = 30.0
     top_projections_per_event: int = 4
     max_projection_rows: int = 100_000
     splat_sigma_horizontal_m: float = 20_000.0
@@ -275,6 +276,8 @@ def parse_config(raw: dict[str, Any]) -> AppConfig:
         raise ValueError("waveform_array.velocity_km_s must be positive")
     if waveform_array.delay_sigma_s <= 0:
         raise ValueError("waveform_array.delay_sigma_s must be positive")
+    if waveform_array.late_phase_max_delay_s <= 0:
+        raise ValueError("waveform_array.late_phase_max_delay_s must be positive")
     if waveform_array.resolution_sigma_min_m <= 0 or waveform_array.resolution_sigma_max_m <= 0:
         raise ValueError("waveform_array resolution sigma bounds must be positive")
     if waveform_array.resolution_sigma_min_m > waveform_array.resolution_sigma_max_m:

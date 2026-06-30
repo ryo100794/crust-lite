@@ -23,6 +23,93 @@ def _type_code(value: str) -> int:
     return {"direct": 0, "reflected": 1, "scattered": 2, "residual": 3}.get(value, 3)
 
 
+def _boolish(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y"}
+    return bool(value)
+
+
+def _is_integer_km_depth(z_m: float) -> bool:
+    depth_km = z_m / 1000.0
+    return abs(depth_km - round(depth_km)) < 1.0e-6
+
+
+def _late_delay_clipped(row: dict[str, Any], max_delay_s: float) -> bool:
+    if "late_delay_clipped" in row:
+        return _boolish(row.get("late_delay_clipped"))
+    primitive_type = str(row.get("primitive_type", "direct") or "direct")
+    if primitive_type == "direct":
+        return False
+    delay_s = float(row.get("late_phase_delay_s", 0.0) or 0.0)
+    return delay_s >= max(0.0, max_delay_s - 1.0e-6)
+
+
+def _depth_flag_code(row: dict[str, Any], max_delay_s: float) -> int:
+    primitive_type = str(row.get("primitive_type", "direct") or "direct")
+    if primitive_type == "direct":
+        z_m = float(row.get("source_event_z_m", row.get("z_m", 0.0)) or 0.0)
+        return 1 if _is_integer_km_depth(z_m) else 0
+    if _late_delay_clipped(row, max_delay_s):
+        return 2
+    return 3
+
+
+def _top_depth_bins(rows: list[dict[str, Any]], key: str, bin_km: float, limit: int = 12) -> list[dict[str, Any]]:
+    counts: dict[float, int] = {}
+    for row in rows:
+        if key not in row:
+            continue
+        depth_km = float(row.get(key, 0.0) or 0.0) / 1000.0
+        binned = round(round(depth_km / bin_km) * bin_km, 3)
+        counts[binned] = counts.get(binned, 0) + 1
+    return [
+        {"depth_km": depth, "count": count}
+        for depth, count in sorted(counts.items(), key=lambda item: item[1], reverse=True)[:limit]
+    ]
+
+
+def _depth_diagnostics(config: AppConfig, rows: list[dict[str, Any]]) -> dict[str, Any]:
+    max_delay_s = float(config.waveform_array.late_phase_max_delay_s)
+    flag_counts = {"continuous_or_unflagged": 0, "catalog_integer_km_direct": 0, "late_delay_window_clipped": 0, "late_model_derived": 0}
+    source_integer = 0
+    source_count = 0
+    late_count = 0
+    clipped_count = 0
+    for row in rows:
+        flag = _depth_flag_code(row, max_delay_s)
+        if flag == 1:
+            flag_counts["catalog_integer_km_direct"] += 1
+        elif flag == 2:
+            flag_counts["late_delay_window_clipped"] += 1
+        elif flag == 3:
+            flag_counts["late_model_derived"] += 1
+        else:
+            flag_counts["continuous_or_unflagged"] += 1
+
+        if "source_event_z_m" in row:
+            source_count += 1
+            if _is_integer_km_depth(float(row.get("source_event_z_m", 0.0) or 0.0)):
+                source_integer += 1
+        if str(row.get("primitive_type", "direct") or "direct") != "direct":
+            late_count += 1
+            if _late_delay_clipped(row, max_delay_s):
+                clipped_count += 1
+
+    return {
+        "depth_coordinate_note": "WebGL z is plotted from catalog hypocenter depth for direct splats and model-derived late-delay projection depth for late splats; waveform data do not directly observe z_m.",
+        "late_phase_max_delay_s": max_delay_s,
+        "source_depth_integer_km_fraction": round(source_integer / source_count, 6) if source_count else 0.0,
+        "late_delay_clipped_count": clipped_count,
+        "late_delay_clipped_fraction_of_late": round(clipped_count / late_count, 6) if late_count else 0.0,
+        "depth_flag_counts": flag_counts,
+        "top_splat_depth_bins_1km": _top_depth_bins(rows, "z_m", 1.0),
+        "top_source_depth_bins_1km": _top_depth_bins(rows, "source_event_z_m", 1.0),
+        "interpretation": "Layer-like bands may be dominated by catalog depth quantization and late-delay search-window clipping; treat them as diagnostics until validated against independent velocity/plate models.",
+    }
+
+
 def _round(value: Any, digits: int = 3) -> float:
     try:
         number = float(value)
@@ -177,9 +264,11 @@ def _splat_payload(config: AppConfig, rows: list[dict[str, Any]]) -> dict[str, A
     sizes: list[float] = []
     opacities: list[float] = []
     types: list[float] = []
+    depth_flags: list[float] = []
     amplitudes: list[float] = []
     line_positions: list[float] = []
     vertical = config.visualization_3d.vertical_exaggeration
+    max_delay_s = float(config.waveform_array.late_phase_max_delay_s)
     amplitude_values = [float(row.get("amplitude", 0.0) or 0.0) for row in rows]
     min_amplitude = min(amplitude_values) if amplitude_values else 0.0
     max_amplitude = max(amplitude_values) if amplitude_values else 1.0
@@ -205,6 +294,7 @@ def _splat_payload(config: AppConfig, rows: list[dict[str, Any]]) -> dict[str, A
         opacities.append(_round(float(row.get("opacity", 0.6) or 0.6), 5))
         primitive_type = str(row.get("primitive_type", "direct") or "direct")
         types.append(float(_type_code(primitive_type)))
+        depth_flags.append(float(_depth_flag_code(row, max_delay_s)))
         amplitudes.append(_round(float(row.get("amplitude", 0.0) or 0.0), 5))
         if id(row) in line_ids:
             sx = float(row.get("source_event_x_m", x_m) or x_m)
@@ -217,6 +307,7 @@ def _splat_payload(config: AppConfig, rows: list[dict[str, Any]]) -> dict[str, A
         "sizes": sizes,
         "opacities": opacities,
         "types": types,
+        "depth_flags": depth_flags,
         "amplitudes": amplitudes,
         "source_lines": line_positions,
         "line_segments": len(line_positions) // 6,
@@ -276,9 +367,16 @@ def _webgl_html(payload: dict[str, Any]) -> str:
   <div class="notice">研究用の状態表示です。地震の発生日・場所・規模を断定的に予測するものではありません。</div>
   <div id="stats"></div>
   <div>
-    <label>color <select id="colorMode"><option value="0" selected>grayscale intensity</option><option value="1">path type overlay</option></select></label>
+    <label>color <select id="colorMode"><option value="0" selected>grayscale intensity</option><option value="1">path type overlay</option><option value="2">depth diagnostics</option></select></label>
     <span>classification overlay: direct / reflected / scattered / residual</span>
   </div>
+  <div>
+    <label><input type="checkbox" data-depth-flag="0" checked>continuous/unflagged depth</label>
+    <label><input type="checkbox" data-depth-flag="1" checked>catalog integer-km direct</label>
+    <label><input type="checkbox" data-depth-flag="2" checked>delay-window clipped</label>
+    <label><input type="checkbox" data-depth-flag="3" checked>late model depth</label>
+  </div>
+  <div>depth diagnostics: amber=catalog-rounded direct, red=delay-window clipped, cyan=late model-derived</div>
   <div>
     <label><input type="checkbox" data-type="0" checked>direct</label>
     <label><input type="checkbox" data-type="1" checked>reflected</label>
@@ -292,6 +390,7 @@ def _webgl_html(payload: dict[str, Any]) -> str:
     <label><input id="lineToggle" type="checkbox">source-projection guides</label>
   </div>
   <div>plate overlay: schematic trench/trough traces and slab-interface wireframes for visual context only</div>
+  <div>z note: waveform data do not directly observe depth; direct z uses catalog depth, late z is model-derived.</div>
   <div>
     splat scale <input id="scaleSlider" type="range" min="0.25" max="8" step="0.05" value="1.45">
     opacity <input id="opacitySlider" type="range" min="0.15" max="2.5" step="0.05" value="1.0">
@@ -305,7 +404,7 @@ const canvas = document.getElementById('gl');
 const gl = canvas.getContext('webgl2', {{antialias: true, alpha: false}});
 if (!gl) throw new Error('WebGL2 is required');
 document.getElementById('stats').textContent =
-  `splats=${{payload.metadata.displayed_splats}} / surface=off / outline vertices=${{payload.terrain.outline_vertices}} / renderer=${{payload.metadata.renderer}}`;
+  `splats=${{payload.metadata.displayed_splats}} / clipped late=${{payload.metadata.depth_diagnostics.late_delay_clipped_count}} / outline vertices=${{payload.terrain.outline_vertices}} / renderer=${{payload.metadata.renderer}}`;
 
 function shader(type, src) {{
   const s = gl.createShader(type);
@@ -324,20 +423,20 @@ function program(vs, fs) {{
 }}
 const splatVS = `#version 300 es
 precision highp float;
-in vec3 a_pos; in vec3 a_color; in float a_size; in float a_opacity; in float a_type;
+in vec3 a_pos; in vec3 a_color; in float a_size; in float a_opacity; in float a_type; in float a_depthFlag;
 uniform mat4 u_mvp; uniform float u_pointScale;
-out vec3 v_color; out float v_opacity; out float v_type;
+out vec3 v_color; out float v_opacity; out float v_type; out float v_depthFlag;
 void main() {{
   vec4 clip = u_mvp * vec4(a_pos, 1.0);
   gl_Position = clip;
   float perspectiveScale = clamp(1.0 / max(0.25, clip.w), 0.35, 3.0);
   gl_PointSize = clamp(a_size * u_pointScale * perspectiveScale, 2.0, 384.0);
-  v_color = a_color; v_opacity = a_opacity; v_type = a_type;
+  v_color = a_color; v_opacity = a_opacity; v_type = a_type; v_depthFlag = a_depthFlag;
 }}`;
 const splatFS = `#version 300 es
 precision highp float;
-in vec3 v_color; in float v_opacity; in float v_type;
-uniform vec4 u_visible; uniform float u_opacityScale; uniform int u_colorMode;
+in vec3 v_color; in float v_opacity; in float v_type; in float v_depthFlag;
+uniform vec4 u_visible; uniform vec4 u_depthFlagVisible; uniform float u_opacityScale; uniform int u_colorMode;
 out vec4 outColor;
 vec3 pathTypeColor(float t) {{
   if (t < 0.5) return vec3(0.30, 0.72, 1.00);
@@ -345,15 +444,22 @@ vec3 pathTypeColor(float t) {{
   if (t < 2.5) return vec3(0.72, 0.42, 0.95);
   return vec3(0.68, 0.68, 0.68);
 }}
+vec3 depthFlagColor(float f) {{
+  if (f < 0.5) return vec3(0.82, 0.82, 0.82);
+  if (f < 1.5) return vec3(1.00, 0.72, 0.18);
+  if (f < 2.5) return vec3(1.00, 0.22, 0.18);
+  return vec3(0.20, 0.92, 1.00);
+}}
 void main() {{
   float vis = v_type < 0.5 ? u_visible.x : (v_type < 1.5 ? u_visible.y : (v_type < 2.5 ? u_visible.z : u_visible.w));
-  if (vis < 0.5) discard;
+  float depthVis = v_depthFlag < 0.5 ? u_depthFlagVisible.x : (v_depthFlag < 1.5 ? u_depthFlagVisible.y : (v_depthFlag < 2.5 ? u_depthFlagVisible.z : u_depthFlagVisible.w));
+  if (vis < 0.5 || depthVis < 0.5) discard;
   vec2 uv = gl_PointCoord * 2.0 - 1.0;
   float r2 = dot(uv, uv);
   if (r2 > 1.0) discard;
   float gaussian = exp(-3.25 * r2);
   float alpha = clamp(v_opacity * u_opacityScale * gaussian, 0.0, 0.92);
-  vec3 color = u_colorMode == 1 ? pathTypeColor(v_type) : v_color;
+  vec3 color = u_colorMode == 1 ? pathTypeColor(v_type) : (u_colorMode == 2 ? depthFlagColor(v_depthFlag) : v_color);
   outColor = vec4(color, alpha);
 }}`;
 const meshVS = `#version 300 es
@@ -401,6 +507,7 @@ const splat = {{
   size: buf(normSizes(payload.splats.sizes)),
   opacity: buf(new Float32Array(payload.splats.opacities)),
   type: buf(new Float32Array(payload.splats.types)),
+  depthFlag: buf(new Float32Array(payload.splats.depth_flags)),
 }};
 const terrain = {{
   n: payload.terrain.indices.length,
@@ -440,7 +547,7 @@ function lookAt(eye, target, up) {{
   return o;
 }}
 let yaw=0.72, pitch=0.46, dist=3.2, pan=[0,0,0];
-let visible=[1,1,1,1], showTerrain=false, showOutlines=true, showPlateBoundaries=true, showPlateInterfaces=true, showLines=false, splatScale=1.45, opacityScale=1.0, colorMode=0;
+let visible=[1,1,1,1], depthVisible=[1,1,1,1], showTerrain=false, showOutlines=true, showPlateBoundaries=true, showPlateInterfaces=true, showLines=false, splatScale=1.45, opacityScale=1.0, colorMode=0;
 const pointers = new Map();
 let lastCentroid = null, lastPinchDistance = 0, lastPointer = null, panning = false;
 function mvp() {{
@@ -501,7 +608,8 @@ function render() {{
   gl.uniform1f(gl.getUniformLocation(splatProg,'u_opacityScale'), opacityScale);
   gl.uniform1i(gl.getUniformLocation(splatProg,'u_colorMode'), colorMode);
   gl.uniform4f(gl.getUniformLocation(splatProg,'u_visible'), visible[0], visible[1], visible[2], visible[3]);
-  attrib(splatProg,'a_pos',splat.pos,3); attrib(splatProg,'a_color',splat.color,3); attrib(splatProg,'a_size',splat.size,1); attrib(splatProg,'a_opacity',splat.opacity,1); attrib(splatProg,'a_type',splat.type,1);
+  gl.uniform4f(gl.getUniformLocation(splatProg,'u_depthFlagVisible'), depthVisible[0], depthVisible[1], depthVisible[2], depthVisible[3]);
+  attrib(splatProg,'a_pos',splat.pos,3); attrib(splatProg,'a_color',splat.color,3); attrib(splatProg,'a_size',splat.size,1); attrib(splatProg,'a_opacity',splat.opacity,1); attrib(splatProg,'a_type',splat.type,1); attrib(splatProg,'a_depthFlag',splat.depthFlag,1);
   gl.drawArrays(gl.POINTS,0,splat.n); gl.depthMask(true);
 }}
 canvas.addEventListener('pointerdown', e => {{
@@ -547,6 +655,7 @@ canvas.addEventListener('pointercancel', endPointer);
 canvas.addEventListener('lostpointercapture', endPointer);
 canvas.addEventListener('wheel', e => {{ e.preventDefault(); dist=Math.max(0.55,Math.min(12,dist*Math.exp(e.deltaY*0.001))); render(); }}, {{passive:false}});
 document.querySelectorAll('input[data-type]').forEach(el => el.addEventListener('change', e => {{ visible[Number(e.target.dataset.type)] = e.target.checked ? 1 : 0; render(); }}));
+document.querySelectorAll('input[data-depth-flag]').forEach(el => el.addEventListener('change', e => {{ depthVisible[Number(e.target.dataset.depthFlag)] = e.target.checked ? 1 : 0; render(); }}));
 document.getElementById('colorMode').addEventListener('change', e => {{ colorMode=Number(e.target.value); render(); }});
 document.getElementById('outlineToggle').addEventListener('change', e => {{ showOutlines=e.target.checked; render(); }});
 document.getElementById('plateBoundaryToggle').addEventListener('change', e => {{ showPlateBoundaries=e.target.checked; render(); }});
@@ -565,6 +674,7 @@ def write_webgl_splat_preview(config: AppConfig, paths: ProjectPaths, rows: list
     paths.outputs_3d.mkdir(parents=True, exist_ok=True)
     limit_rows = rows[: min(len(rows), 250_000)]
     splats = _splat_payload(config, limit_rows)
+    depth_diagnostics = _depth_diagnostics(config, limit_rows)
     terrain = _terrain_payload(config, is_sample=is_sample)
     tectonics = _tectonics_payload(config)
     metadata = {
@@ -576,8 +686,9 @@ def write_webgl_splat_preview(config: AppConfig, paths: ProjectPaths, rows: list
         "line_segments": splats["line_segments"],
         "source_projection_guides_default_visible": False,
         "splat_color_default": "grayscale_relative_amplitude",
-        "splat_color_modes": ["grayscale_relative_amplitude", "path_type_overlay"],
-        "splat_color_note": "Default grayscale encodes relative amplitude. Path-type colors are an optional classification overlay, not intensity.",
+        "splat_color_modes": ["grayscale_relative_amplitude", "path_type_overlay", "depth_diagnostics"],
+        "splat_color_note": "Default grayscale encodes relative amplitude. Path-type colors and depth diagnostics are optional overlays, not intensity.",
+        "depth_diagnostics": depth_diagnostics,
         "is_sample_data": is_sample,
         "vertical_exaggeration": config.visualization_3d.vertical_exaggeration,
         "synthetic_aperture_enabled": config.waveform_array.synthetic_aperture_enabled,

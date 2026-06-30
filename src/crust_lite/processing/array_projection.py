@@ -47,6 +47,11 @@ PROJECTION_COLUMNS = [
     "path_family",
     "primitive_type",
     "late_phase_delay_s",
+    "late_phase_max_delay_s",
+    "late_delay_clipped",
+    "depth_source",
+    "depth_method",
+    "depth_artifact_risk",
     "excess_path_km",
     "residual_spread_s",
     "positive_residual_fraction",
@@ -87,6 +92,11 @@ SPLAT_COLUMNS = [
     "primitive_type",
     "path_family",
     "late_phase_delay_s",
+    "late_phase_max_delay_s",
+    "late_delay_clipped",
+    "depth_source",
+    "depth_method",
+    "depth_artifact_risk",
     "excess_path_km",
     "residual_spread_s",
     "positive_residual_fraction",
@@ -419,8 +429,9 @@ def _late_phase_metrics(
     frequency_hz: float,
     velocity_m_s: float,
     delay_sigma_s: float,
+    late_phase_max_delay_s: float,
     use_phase: bool,
-) -> tuple[float, float, float, float, float, float]:
+) -> tuple[float, float, float, float, float, float, bool]:
     """Score coherent late energy after removing the direct-arrival trend.
 
     The result is a relative reflection/scattering indicator. It is not a
@@ -438,9 +449,11 @@ def _late_phase_metrics(
     positive_weight = sum(weight for _residual, weight in positive)
     positive_fraction = clamp01(positive_weight / total_weight)
     if len(positive) < 2 or positive_fraction < 0.20:
-        return 0.0, 0.0, 0.0, 0.0, positive_fraction, 0.0
+        return 0.0, 0.0, 0.0, 0.0, positive_fraction, 0.0, False
 
-    late_delay_s = max(positive_threshold, min(30.0, _weighted_median(positive)))
+    raw_late_delay_s = _weighted_median(positive)
+    late_delay_s = max(positive_threshold, min(late_phase_max_delay_s, raw_late_delay_s))
+    late_delay_clipped = raw_late_delay_s >= late_phase_max_delay_s
     window_s = max(0.25, 2.0 * delay_sigma_s)
     weighted_fits = [
         math.exp(-0.5 * ((residual - late_delay_s) / window_s) ** 2) * weight
@@ -473,7 +486,7 @@ def _late_phase_metrics(
         sum(((residual - mean_positive) ** 2) * weight for residual, weight in positive) / max(positive_weight, 1e-12)
     )
     energy = clamp01((0.55 * late_phase + 0.45 * late_fit) * (0.35 + 0.65 * positive_fraction))
-    return energy, late_phase, late_delay_s, spread_s, positive_fraction, phase_result
+    return energy, late_phase, late_delay_s, spread_s, positive_fraction, phase_result, late_delay_clipped
 
 
 def _late_path_family(late_energy: float, spread_s: float, delay_sigma_s: float, positive_fraction: float) -> tuple[str, str]:
@@ -549,6 +562,7 @@ def _project_event_task(task: tuple[AppConfig, str, dict[str, Any], list[tuple[f
     config, event_id, event, event_freq_rows, offsets, start, is_sample = task
     projector = LocalProjector(config.region)
     velocity_m_s = config.waveform_array.velocity_km_s * 1000.0
+    late_phase_max_delay_s = float(config.waveform_array.late_phase_max_delay_s)
     event_candidates: list[dict[str, Any]] = []
     event_x = float(event.get("x_m", 0.0) or 0.0)
     event_y = float(event.get("y_m", 0.0) or 0.0)
@@ -614,6 +628,11 @@ def _project_event_task(task: tuple[AppConfig, str, dict[str, Any], list[tuple[f
                     "path_family": "direct",
                     "primitive_type": "direct",
                     "late_phase_delay_s": 0.0,
+                    "late_phase_max_delay_s": late_phase_max_delay_s,
+                    "late_delay_clipped": False,
+                    "depth_source": "catalog_hypocenter",
+                    "depth_method": "event_catalog_depth_fixed_to_direct_projection",
+                    "depth_artifact_risk": "catalog_depth_quantization_possible",
                     "excess_path_km": 0.0,
                     "residual_spread_s": 0.0,
                     "positive_residual_fraction": 0.0,
@@ -641,13 +660,22 @@ def _project_event_task(task: tuple[AppConfig, str, dict[str, Any], list[tuple[f
                 }
             )
             if config.waveform_array.synthetic_aperture_enabled and config.waveform_array.use_group_delay:
-                late_energy, late_phase, late_delay_s, spread_s, positive_fraction, late_phase_result = _late_phase_metrics(
+                (
+                    late_energy,
+                    late_phase,
+                    late_delay_s,
+                    spread_s,
+                    positive_fraction,
+                    late_phase_result,
+                    late_delay_clipped,
+                ) = _late_phase_metrics(
                     stations,
                     gx,
                     gy,
                     freq,
                     velocity_m_s,
                     config.waveform_array.delay_sigma_s,
+                    late_phase_max_delay_s,
                     config.waveform_array.use_phase,
                 )
                 if late_energy >= 0.08:
@@ -682,6 +710,11 @@ def _project_event_task(task: tuple[AppConfig, str, dict[str, Any], list[tuple[f
                             "path_family": path_family,
                             "primitive_type": primitive_type,
                             "late_phase_delay_s": late_delay_s,
+                            "late_phase_max_delay_s": late_phase_max_delay_s,
+                            "late_delay_clipped": late_delay_clipped,
+                            "depth_source": "late_phase_model",
+                            "depth_method": "event_depth_plus_half_extra_path_homogeneous_velocity",
+                            "depth_artifact_risk": "late_delay_window_clipped" if late_delay_clipped else "model_derived_depth",
                             "excess_path_km": excess_path_km,
                             "residual_spread_s": spread_s,
                             "positive_residual_fraction": positive_fraction,
@@ -817,6 +850,7 @@ def build_waveform_array_projection(
             "resolution_sigma_min_m": config.waveform_array.resolution_sigma_min_m,
             "resolution_sigma_max_m": config.waveform_array.resolution_sigma_max_m,
             "hinet_source_boost": config.waveform_array.hinet_source_boost,
+            "late_phase_max_delay_s": config.waveform_array.late_phase_max_delay_s,
             "array_projection_workers": worker_count,
         },
     )
@@ -921,6 +955,11 @@ def _build_splats(config: AppConfig, projection_rows: list[dict[str, Any]], is_s
                 "primitive_type": primitive_type,
                 "path_family": row.get("path_family", "direct"),
                 "late_phase_delay_s": row.get("late_phase_delay_s", 0.0),
+                "late_phase_max_delay_s": row.get("late_phase_max_delay_s", config.waveform_array.late_phase_max_delay_s),
+                "late_delay_clipped": row.get("late_delay_clipped", False),
+                "depth_source": row.get("depth_source", "catalog_hypocenter" if primitive_type == "direct" else "late_phase_model"),
+                "depth_method": row.get("depth_method", "event_catalog_depth_fixed_to_direct_projection" if primitive_type == "direct" else "event_depth_plus_half_extra_path_homogeneous_velocity"),
+                "depth_artifact_risk": row.get("depth_artifact_risk", "catalog_depth_quantization_possible" if primitive_type == "direct" else "model_derived_depth"),
                 "excess_path_km": row.get("excess_path_km", 0.0),
                 "residual_spread_s": row.get("residual_spread_s", 0.0),
                 "positive_residual_fraction": row.get("positive_residual_fraction", 0.0),
