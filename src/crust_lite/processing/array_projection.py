@@ -56,6 +56,10 @@ PROJECTION_COLUMNS = [
     "structural_weight",
     "projection_quality_flag",
     "projection_quality_score",
+    "is_structure_candidate",
+    "splat_role",
+    "raw_amplitude",
+    "structure_amplitude",
     "excess_path_km",
     "residual_spread_s",
     "positive_residual_fraction",
@@ -105,6 +109,10 @@ SPLAT_COLUMNS = [
     "structural_weight",
     "projection_quality_flag",
     "projection_quality_score",
+    "is_structure_candidate",
+    "splat_role",
+    "raw_amplitude",
+    "structure_amplitude",
     "excess_path_km",
     "residual_spread_s",
     "positive_residual_fraction",
@@ -982,6 +990,9 @@ def build_waveform_array_projection(
         "splat_quality_flag_counts": _count_values(splat_rows, "projection_quality_flag"),
         "reject_late_delay_clipped": config.waveform_array.reject_late_delay_clipped,
         "include_direct_in_structure_splats": config.waveform_array.include_direct_in_structure_splats,
+        "retain_diagnostic_splats": config.waveform_array.retain_diagnostic_splats,
+        "splat_role_counts": _count_values(splat_rows, "splat_role"),
+        "structure_candidate_count": sum(1 for row in splat_rows if row.get("is_structure_candidate")),
         "catalog_integer_depth_uncertainty_km": config.waveform_array.catalog_integer_depth_uncertainty_km,
         "synthetic_aperture_enabled": config.waveform_array.synthetic_aperture_enabled,
         "resolution_sigma_min_m": config.waveform_array.resolution_sigma_min_m,
@@ -1021,21 +1032,35 @@ def _build_splats(config: AppConfig, projection_rows: list[dict[str, Any]], is_s
     for source_row in projection_rows:
         row = dict(source_row)
         primitive_type = str(row.get("primitive_type", "direct") or "direct")
-        if primitive_type == "direct" and not config.waveform_array.include_direct_in_structure_splats:
-            continue
         structural_weight, depth_uncertainty_km, quality_flag, quality_score = _projection_depth_quality(config, row)
-        if structural_weight <= 0.0 and config.waveform_array.reject_late_delay_clipped:
+        is_structure_candidate = True
+        splat_role = "structure"
+        if primitive_type == "direct" and not config.waveform_array.include_direct_in_structure_splats:
+            structural_weight = 0.0
+            is_structure_candidate = False
+            splat_role = "source_anchor"
+            quality_flag = "direct_catalog_depth_retained_as_source_anchor"
+            quality_score = 0.0
+        elif structural_weight <= 0.0 and config.waveform_array.reject_late_delay_clipped:
+            is_structure_candidate = False
+            splat_role = "diagnostic_rejected"
+            quality_flag = "late_delay_window_clipped_retained_diagnostic"
+            quality_score = 0.0
+        if not is_structure_candidate and not config.waveform_array.retain_diagnostic_splats:
             continue
         row["structural_weight"] = structural_weight
         row["depth_uncertainty_km"] = depth_uncertainty_km
         row["projection_quality_flag"] = quality_flag
         row["projection_quality_score"] = quality_score
+        row["is_structure_candidate"] = is_structure_candidate
+        row["splat_role"] = splat_role
         quality_rows.append(row)
     rows = sorted(
         quality_rows,
         key=lambda row: (
-            float(row.get("beam_power", 0.0) or 0.0) * float(row.get("structural_weight", 1.0) or 0.0),
-            float(row.get("beam_energy", 0.0) or 0.0) * float(row.get("projection_quality_score", 1.0) or 0.0),
+            1 if row.get("is_structure_candidate") else 0,
+            float(row.get("beam_power", 0.0) or 0.0) * max(float(row.get("structural_weight", 0.0) or 0.0), 0.05),
+            float(row.get("beam_energy", 0.0) or 0.0),
         ),
         reverse=True,
     )
@@ -1044,8 +1069,10 @@ def _build_splats(config: AppConfig, projection_rows: list[dict[str, Any]], is_s
     for idx, row in enumerate(rows, start=1):
         structural_weight = clamp01(float(row.get("structural_weight", 1.0) or 0.0))
         depth_uncertainty_km = float(row.get("depth_uncertainty_km", 0.0) or 0.0)
-        amplitude = clamp01(float(row.get("beam_energy", 0.0) or 0.0) * structural_weight)
-        array_coherence = clamp01(float(row.get("array_coherence", amplitude) or 0.0) * max(0.25, structural_weight))
+        raw_amplitude = clamp01(float(row.get("beam_energy", 0.0) or 0.0))
+        structure_amplitude = clamp01(raw_amplitude * structural_weight)
+        amplitude = raw_amplitude
+        array_coherence = clamp01(float(row.get("array_coherence", amplitude) or 0.0))
         sigma_xy = float(row.get("gaussian_splat_sigma_m", config.waveform_array.splat_sigma_horizontal_m) or 0.0)
         sigma_z = max(
             float(config.waveform_array.splat_sigma_vertical_m),
@@ -1078,6 +1105,10 @@ def _build_splats(config: AppConfig, projection_rows: list[dict[str, Any]], is_s
                 "structural_weight": structural_weight,
                 "projection_quality_flag": row.get("projection_quality_flag", "unknown"),
                 "projection_quality_score": row.get("projection_quality_score", structural_weight),
+                "is_structure_candidate": bool(row.get("is_structure_candidate", True)),
+                "splat_role": row.get("splat_role", "structure"),
+                "raw_amplitude": raw_amplitude,
+                "structure_amplitude": structure_amplitude,
                 "excess_path_km": row.get("excess_path_km", 0.0),
                 "residual_spread_s": row.get("residual_spread_s", 0.0),
                 "positive_residual_fraction": row.get("positive_residual_fraction", 0.0),

@@ -690,7 +690,7 @@ def write_webgl_splat_preview(config: AppConfig, paths: ProjectPaths, rows: list
         "splat_color_note": "Default grayscale encodes relative amplitude. Path-type colors and depth diagnostics are optional overlays, not intensity.",
         "depth_quality_handling": {
             "display_filtering_default": "none",
-            "computation_policy": "late-delay clipped candidates are rejected during splat construction; direct-wave catalog-depth anchors are excluded from structure splats unless include_direct_in_structure_splats=true.",
+            "computation_policy": "All splat candidates are retained by default. Direct-wave catalog-depth anchors and clipped late-delay candidates are marked as diagnostics with structure_amplitude=0 unless explicitly enabled; downstream structure density uses structure_amplitude, not display amplitude.",
         },
         "depth_diagnostics": depth_diagnostics,
         "is_sample_data": is_sample,

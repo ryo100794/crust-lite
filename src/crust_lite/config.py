@@ -76,6 +76,7 @@ class WaveformArrayConfig:
     delay_sigma_s: float = 0.35
     late_phase_max_delay_s: float = 30.0
     reject_late_delay_clipped: bool = True
+    retain_diagnostic_splats: bool = True
     include_direct_in_structure_splats: bool = False
     catalog_integer_depth_uncertainty_km: float = 8.0
     catalog_integer_depth_weight: float = 0.20

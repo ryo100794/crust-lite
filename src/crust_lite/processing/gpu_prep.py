@@ -67,13 +67,19 @@ def _sql_literal(path: Path) -> str:
 
 
 def _lod_sizes(sample: bool) -> list[tuple[int, float]]:
-    if sample:
-        return [(0, 20_000.0), (1, 40_000.0)]
-    return [(0, 2_500.0), (1, 5_000.0), (2, 10_000.0), (3, 20_000.0), (4, 40_000.0)]
+    values = [(0, 20_000.0), (1, 40_000.0)] if sample else [
+        (0, 2_500.0),
+        (1, 5_000.0),
+        (2, 10_000.0),
+        (3, 20_000.0),
+        (4, 40_000.0),
+    ]
+    max_lod = _env_int("CRUST_LITE_SPLAT_LOD_MAX", values[-1][0], 0, values[-1][0])
+    return [(lod, size) for lod, size in values if lod <= max_lod]
 
 
 def _offsets(sample: bool) -> list[tuple[int, int, int]]:
-    radius = 1 if sample else 2
+    radius = _env_int("CRUST_LITE_SPLAT_VOXEL_RADIUS", 1, 0, 4) if not sample else 1
     values: list[tuple[int, int, int]] = []
     for dx in range(-radius, radius + 1):
         for dy in range(-radius, radius + 1):
@@ -399,11 +405,21 @@ def _build_gpu_prep_duckdb(config: AppConfig, paths: ProjectPaths, splat_path: P
                 GREATEST(COALESCE(TRY_CAST(sigma_x_m AS DOUBLE), 5000.0), 1.0) AS sigma_x_m,
                 GREATEST(COALESCE(TRY_CAST(sigma_y_m AS DOUBLE), 5000.0), 1.0) AS sigma_y_m,
                 GREATEST(COALESCE(TRY_CAST(sigma_z_m AS DOUBLE), 5000.0), 1.0) AS sigma_z_m,
-                COALESCE(TRY_CAST(amplitude AS DOUBLE), 0.0) AS amplitude,
+                COALESCE(TRY_CAST(amplitude AS DOUBLE), 0.0) AS raw_amplitude,
+                COALESCE(
+                  TRY_CAST(structure_amplitude AS DOUBLE),
+                  COALESCE(TRY_CAST(amplitude AS DOUBLE), 0.0) * COALESCE(TRY_CAST(structural_weight AS DOUBLE), 1.0),
+                  COALESCE(TRY_CAST(amplitude AS DOUBLE), 0.0)
+                ) AS amplitude,
                 COALESCE(TRY_CAST(opacity AS DOUBLE), 0.5) AS opacity,
                 CAST(COALESCE(primitive_type, 'residual') AS VARCHAR) AS primitive_type,
                 LOWER(CAST(COALESCE(is_sample_data, false) AS VARCHAR)) IN ('true', '1') AS is_sample_data
               FROM gaussian_splat_primitive
+              WHERE COALESCE(
+                  TRY_CAST(structure_amplitude AS DOUBLE),
+                  COALESCE(TRY_CAST(amplitude AS DOUBLE), 0.0) * COALESCE(TRY_CAST(structural_weight AS DOUBLE), 1.0),
+                  COALESCE(TRY_CAST(amplitude AS DOUBLE), 0.0)
+                ) > 1.0e-12
             ),
             expanded AS (
               SELECT
@@ -489,7 +505,14 @@ def _build_gpu_prep_duckdb(config: AppConfig, paths: ProjectPaths, splat_path: P
                 """
             ).fetchall()
         ]
-        view_image_meta = _build_projection_view_images_duckdb(con, paths, is_sample)
+        if str(os.environ.get("CRUST_LITE_SKIP_VIEW_IMAGES", "")).lower() in {"1", "true", "yes", "on"}:
+            view_image_meta = {
+                "view_image_status": "skipped_by_CRUST_LITE_SKIP_VIEW_IMAGES",
+                "view_image_rows": 0,
+                "view_image_part_rows": 0,
+            }
+        else:
+            view_image_meta = _build_projection_view_images_duckdb(con, paths, is_sample)
     finally:
         con.close()
     metadata = {
@@ -520,7 +543,13 @@ def _build_gpu_prep_python(config: AppConfig, paths: ProjectPaths, splat_path: P
         sx = max(float(row.get("sigma_x_m", 5000.0) or 5000.0), 1.0)
         sy = max(float(row.get("sigma_y_m", 5000.0) or 5000.0), 1.0)
         sz = max(float(row.get("sigma_z_m", 5000.0) or 5000.0), 1.0)
-        amp = float(row.get("amplitude", 0.0) or 0.0)
+        structure_amp_raw = row.get("structure_amplitude")
+        if structure_amp_raw in (None, ""):
+            amp = float(row.get("amplitude", 0.0) or 0.0) * float(row.get("structural_weight", 1.0) or 0.0)
+        else:
+            amp = float(structure_amp_raw or 0.0)
+        if amp <= 1.0e-12:
+            continue
         opacity = float(row.get("opacity", 0.5) or 0.5)
         primitive_type = str(row.get("primitive_type", "residual") or "residual")
         event_id = str(row.get("event_id", ""))
