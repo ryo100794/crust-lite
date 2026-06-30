@@ -78,3 +78,12 @@ visualization_3d:
   show_stress: true
   show_failure_index: true
   gnss_vector_scale: 50000.0
+
+tectonic_model:
+  enabled: true
+  source: configured_external_plate_model
+  boundary_geojson: null
+  slab_depth_grid_csv: null
+  slab_contour_csv: null
+  default_show: false
+  fallback_to_schematic: false

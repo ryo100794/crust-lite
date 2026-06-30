@@ -90,6 +90,7 @@ class WaveformArrayConfig:
     reflected_depth_weight: float = 1.0
     scattered_depth_weight: float = 0.75
     residual_depth_weight: float = 0.35
+    use_depth_uncertainty_in_splat_sigma: bool = False
     top_projections_per_event: int = 4
     max_projection_rows: int = 100_000
     splat_sigma_horizontal_m: float = 20_000.0
@@ -102,6 +103,17 @@ class WaveformArrayConfig:
     use_group_delay: bool = True
     output_ply: bool = True
     output_html_preview: bool = True
+
+
+@dataclass(frozen=True)
+class TectonicModelConfig:
+    enabled: bool = True
+    source: str = "configured_external_plate_model"
+    boundary_geojson: str | None = None
+    slab_depth_grid_csv: str | None = None
+    slab_contour_csv: str | None = None
+    default_show: bool = False
+    fallback_to_schematic: bool = False
 
 
 @dataclass(frozen=True)
@@ -164,6 +176,7 @@ class AppConfig:
     preprocessing: PreprocessingConfig = field(default_factory=PreprocessingConfig)
     visualization_3d: Visualization3DConfig = field(default_factory=Visualization3DConfig)
     waveform_array: WaveformArrayConfig = field(default_factory=WaveformArrayConfig)
+    tectonic_model: TectonicModelConfig = field(default_factory=TectonicModelConfig)
     path: Path | None = None
 
 
@@ -203,6 +216,7 @@ def load_config(path: str | Path) -> AppConfig:
         preprocessing=cfg.preprocessing,
         visualization_3d=cfg.visualization_3d,
         waveform_array=cfg.waveform_array,
+        tectonic_model=cfg.tectonic_model,
         path=config_path,
     )
 
@@ -217,6 +231,7 @@ def parse_config(raw: dict[str, Any]) -> AppConfig:
     resources_raw = raw.get("resources", {})
     preprocessing_raw = raw.get("preprocessing", {})
     waveform_array_raw = raw.get("waveform_array", {})
+    tectonic_model_raw = raw.get("tectonic_model", {})
 
     bbox = _tuple_float(region_raw.get("bbox"), 4, "region.bbox")
     min_lon, min_lat, max_lon, max_lat = bbox
@@ -322,6 +337,8 @@ def parse_config(raw: dict[str, Any]) -> AppConfig:
     if waveform_array.hinet_source_boost <= 0:
         raise ValueError("waveform_array.hinet_source_boost must be positive")
 
+    tectonic_model = TectonicModelConfig(**{**TectonicModelConfig().__dict__, **tectonic_model_raw})
+
     return AppConfig(
         region=RegionConfig(
             name=str(_get(region_raw, "name")),
@@ -355,6 +372,7 @@ def parse_config(raw: dict[str, Any]) -> AppConfig:
         resources=resources,
         preprocessing=preprocessing,
         waveform_array=waveform_array,
+        tectonic_model=tectonic_model,
         data_sources=DataSourceConfig(
             use_fdsn=bool(_get(sources_raw, "use_fdsn")),
             use_jshis=bool(_get(sources_raw, "use_jshis")),

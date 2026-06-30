@@ -14,7 +14,7 @@ import gzip
 import json
 import math
 from bisect import bisect_left, bisect_right
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 from urllib.request import Request, urlopen
@@ -42,7 +42,7 @@ def _download(url: str, output: Path) -> bool:
 
 
 def _parse_time(value: str) -> datetime:
-    return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc).replace(tzinfo=None)
+    return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC).replace(tzinfo=None)
 
 
 def _event_rows(path: Path) -> list[dict[str, Any]]:
@@ -51,7 +51,7 @@ def _event_rows(path: Path) -> list[dict[str, Any]]:
 
 
 def _time_seconds(value: datetime) -> float:
-    return value.replace(tzinfo=timezone.utc).timestamp()
+    return value.replace(tzinfo=UTC).timestamp()
 
 
 def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -116,9 +116,8 @@ def _match_event(
 def _iter_ndk_files(raw_dir: Path, start: date, end: date) -> list[Path]:
     files: list[Path] = []
     base = raw_dir / "jan76_dec20.ndk.gz"
-    if end >= date(1976, 1, 1) and start <= date(2020, 12, 31):
-        if _download(BASE_NDK_URL, base):
-            files.append(base)
+    if end >= date(1976, 1, 1) and start <= date(2020, 12, 31) and _download(BASE_NDK_URL, base):
+        files.append(base)
     cursor = max(start, date(2021, 1, 1))
     cursor = date(cursor.year, cursor.month, 1)
     last = date(end.year, end.month, 1)

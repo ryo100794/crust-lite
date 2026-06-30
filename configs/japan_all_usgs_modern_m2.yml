@@ -100,6 +100,7 @@ waveform_array:
   projection_refinement_fraction: 0.5
   projection_refinement_steps: 1
   delay_sigma_s: 0.35
+  use_depth_uncertainty_in_splat_sigma: false
   top_projections_per_event: 128
   max_projection_rows: 250000
   splat_sigma_horizontal_m: 20000.0
@@ -112,3 +113,12 @@ waveform_array:
   use_group_delay: true
   output_ply: true
   output_html_preview: true
+
+tectonic_model:
+  enabled: true
+  source: configured_external_plate_model
+  boundary_geojson: null
+  slab_depth_grid_csv: null
+  slab_contour_csv: null
+  default_show: false
+  fallback_to_schematic: false

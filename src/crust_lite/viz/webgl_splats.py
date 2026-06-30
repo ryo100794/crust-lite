@@ -8,7 +8,7 @@ from crust_lite.config import AppConfig
 from crust_lite.geo import LocalProjector
 from crust_lite.paths import ProjectPaths
 from crust_lite.viz.japan_outline import JapanOutline, local_context_outlines
-from crust_lite.viz.tectonics import TectonicLine, japan_tectonic_context
+from crust_lite.viz.tectonics import TectonicLine, tectonic_context_from_config
 
 
 def _count_values(rows: list[dict[str, Any]], key: str) -> dict[str, int]:
@@ -345,7 +345,7 @@ def _terrain_payload(config: AppConfig, is_sample: bool) -> dict[str, Any]:
 def _tectonics_payload(config: AppConfig) -> dict[str, Any]:
     projector = LocalProjector(config.region)
     vertical = config.visualization_3d.vertical_exaggeration
-    context = japan_tectonic_context()
+    context = tectonic_context_from_config(config)
 
     def project_line(line: TectonicLine) -> dict[str, Any]:
         flat: list[float] = []
@@ -371,6 +371,11 @@ def _tectonics_payload(config: AppConfig) -> dict[str, Any]:
         "interface_vertices": sum(line["vertices"] for line in interfaces),
         "source": context["source"],
         "note": context["note"],
+        "literature_based": context["literature_based"],
+        "model_source": context["model_source"],
+        "source_files": context["source_files"],
+        "fallback_used": context["fallback_used"],
+        "default_show": context["default_show"],
     }
 
 
@@ -413,8 +418,7 @@ def _splat_payload(config: AppConfig, rows: list[dict[str, Any]]) -> dict[str, A
         grayscale = 0.10 + 0.90 * math.sqrt(relative_intensity)
         colors.extend([_round(grayscale, 5), _round(grayscale, 5), _round(grayscale, 5)])
         sigma_xy = max(float(row.get("sigma_x_m", 1.0) or 1.0), float(row.get("sigma_y_m", 1.0) or 1.0))
-        sigma_z = max(float(row.get("sigma_z_m", 1.0) or 1.0) * vertical, 1.0)
-        sizes.append(_round(max(sigma_xy, 0.35 * sigma_z), 3))
+        sizes.append(_round(sigma_xy, 3))
         opacities.append(_round(float(row.get("opacity", 0.6) or 0.6), 5))
         primitive_type = str(row.get("primitive_type", "direct") or "direct")
         types.append(float(_type_code(primitive_type)))
@@ -522,7 +526,7 @@ def _webgl_html(payload: dict[str, Any]) -> str:
     <label><input type="checkbox" data-depth-flag="3" checked>late model depth</label>
   </div>
   <div>depth diagnostics: amber=catalog-rounded direct, red=delay-window clipped, cyan=late model-derived.</div>
-  <div>depth uncertainty: z uses median/center depth; p05-p95 intervals are carried in metadata, not drawn as fixed layers.</div>
+  <div>depth uncertainty: z uses median/center depth; p05-p95 stays metadata and no longer enlarges point size.</div>
   <div>
     <label><input type="checkbox" data-type="0" checked>direct</label>
     <label><input type="checkbox" data-type="1" checked>reflected</label>
@@ -531,11 +535,11 @@ def _webgl_html(payload: dict[str, Any]) -> str:
   </div>
   <div>
     <label><input id="outlineToggle" type="checkbox" checked>Japan outline</label>
-    <label><input id="plateBoundaryToggle" type="checkbox">schematic plate boundaries</label>
-    <label><input id="plateInterfaceToggle" type="checkbox">schematic slab wireframes</label>
+    <label><input id="plateBoundaryToggle" type="checkbox">plate boundaries</label>
+    <label><input id="plateInterfaceToggle" type="checkbox">slab/interface lines</label>
     <label><input id="lineToggle" type="checkbox">source-projection guides</label>
   </div>
-  <div>plate overlay: schematic only, not literature-calibrated and not for analytical comparison</div>
+  <div id="plateOverlayNote"></div>
   <div>z note: waveform data do not directly observe depth; direct/late z is an uncertainty-aware computational center.</div>
   <div>
     splat scale <input id="scaleSlider" type="range" min="0.25" max="8" step="0.05" value="1.45">
@@ -552,6 +556,7 @@ if (!gl) throw new Error('WebGL2 is required');
 const depthUncertainty = payload.metadata.depth_diagnostics.uncertainty || {{rows_with_complete_p05_p50_p95: 0}};
 document.getElementById('stats').textContent =
   `splats=${{payload.metadata.displayed_splats}} / depth p05-p95 rows=${{depthUncertainty.rows_with_complete_p05_p50_p95}} / clipped late=${{payload.metadata.depth_diagnostics.late_delay_clipped_count}} / outline vertices=${{payload.terrain.outline_vertices}}`;
+document.getElementById('plateOverlayNote').textContent = payload.metadata.tectonic_overlay_note;
 
 function shader(type, src) {{
   const s = gl.createShader(type);
@@ -694,7 +699,7 @@ function lookAt(eye, target, up) {{
   return o;
 }}
 let yaw=0.72, pitch=0.46, dist=3.2, pan=[0,0,0];
-let visible=[1,1,1,1], depthVisible=[1,1,1,1], showTerrain=false, showOutlines=true, showPlateBoundaries=false, showPlateInterfaces=false, showLines=false, splatScale=1.45, opacityScale=1.0, colorMode=0;
+let visible=[1,1,1,1], depthVisible=[1,1,1,1], showTerrain=false, showOutlines=true, showPlateBoundaries=Boolean(payload.tectonics.default_show), showPlateInterfaces=Boolean(payload.tectonics.default_show), showLines=false, splatScale=1.45, opacityScale=1.0, colorMode=0;
 const pointers = new Map();
 let lastCentroid = null, lastPinchDistance = 0, lastPointer = null, panning = false;
 function mvp() {{
@@ -805,6 +810,8 @@ document.querySelectorAll('input[data-type]').forEach(el => el.addEventListener(
 document.querySelectorAll('input[data-depth-flag]').forEach(el => el.addEventListener('change', e => {{ depthVisible[Number(e.target.dataset.depthFlag)] = e.target.checked ? 1 : 0; render(); }}));
 document.getElementById('colorMode').addEventListener('change', e => {{ colorMode=Number(e.target.value); render(); }});
 document.getElementById('outlineToggle').addEventListener('change', e => {{ showOutlines=e.target.checked; render(); }});
+document.getElementById('plateBoundaryToggle').checked = showPlateBoundaries;
+document.getElementById('plateInterfaceToggle').checked = showPlateInterfaces;
 document.getElementById('plateBoundaryToggle').addEventListener('change', e => {{ showPlateBoundaries=e.target.checked; render(); }});
 document.getElementById('plateInterfaceToggle').addEventListener('change', e => {{ showPlateInterfaces=e.target.checked; render(); }});
 document.getElementById('lineToggle').addEventListener('change', e => {{ showLines=e.target.checked; render(); }});
@@ -828,6 +835,7 @@ def write_webgl_splat_preview(config: AppConfig, paths: ProjectPaths, rows: list
         "html": str(paths.outputs_3d / "array_projection_splats.html"),
         "renderer": "webgl2_gaussian_point_sprite",
         "gaussian_shader": "fragment_alpha=opacity*exp(-3.25*r2)",
+        "visual_resolution_policy": "point sprite size uses horizontal resolution only; depth uncertainty is metadata and does not blur the WebGL splat by default",
         "displayed_splats": len(limit_rows),
         "total_splats": len(rows),
         "line_segments": splats["line_segments"],
@@ -837,8 +845,8 @@ def write_webgl_splat_preview(config: AppConfig, paths: ProjectPaths, rows: list
         "splat_color_note": "Default grayscale encodes relative amplitude. Path-type colors and depth diagnostics are optional overlays, not intensity.",
         "depth_quality_handling": {
             "display_filtering_default": "none",
-            "z_display_policy": "The plotted z coordinate is the computational depth center: depth_p50_km when available, otherwise legacy z_m. The p05-p95 interval is preserved in metadata and is not flattened into display-only layer styling.",
-            "computation_policy": "All splat candidates are retained by default. Direct-wave catalog-depth anchors, clipped late-delay candidates, velocity-sampling ranges, and projection-refinement offsets are represented as computational uncertainty/diagnostic metadata; downstream structure density should use structure_amplitude and uncertainty fields, not display amplitude or visual layer appearance.",
+            "z_display_policy": "The plotted z coordinate is the computational depth center: depth_p50_km when available, otherwise legacy z_m. The p05-p95 interval is preserved in metadata and does not enlarge point sprites by default.",
+            "computation_policy": "All splat candidates are retained by default. Direct-wave catalog-depth anchors, clipped late-delay candidates, velocity-sampling ranges, and projection-refinement offsets are represented as computational uncertainty/diagnostic metadata. Downstream structure density uses structure_amplitude and resolution sigma_z_m; depth uncertainty does not blur density unless explicitly enabled.",
         },
         "depth_diagnostics": depth_diagnostics,
         "is_sample_data": is_sample,
@@ -864,9 +872,18 @@ def write_webgl_splat_preview(config: AppConfig, paths: ProjectPaths, rows: list
         "tectonic_overlay_note": tectonics["note"],
         "tectonic_boundary_count": len(tectonics["boundaries"]),
         "tectonic_interface_line_count": len(tectonics["interfaces"]),
-        "tectonic_overlay_default_visible": False,
-        "tectonic_overlay_literature_based": False,
-        "tectonic_overlay_warning": "Schematic hand-built context only. It is not calibrated to Slab2, GSI, JMA, JAMSTEC, or other published plate-interface datasets and should not be used for analytical comparison.",
+        "tectonic_overlay_default_visible": bool(tectonics["default_show"]),
+        "tectonic_overlay_literature_based": bool(tectonics["literature_based"]),
+        "tectonic_overlay_model_source": tectonics["model_source"],
+        "tectonic_overlay_source_files": tectonics["source_files"],
+        "tectonic_overlay_fallback_used": bool(tectonics["fallback_used"]),
+        "tectonic_overlay_warning": (
+            "Schematic fallback context only. It is not calibrated to Slab2, GSI, JMA, JAMSTEC, or other published plate-interface datasets and should not be used for analytical comparison."
+            if tectonics["fallback_used"]
+            else "Local plate model overlay loaded from configured files; validate source provenance and preprocessing before analytical comparison."
+            if tectonics["literature_based"]
+            else "No external plate-interface model was loaded; schematic plate fallback is disabled to avoid a misleading overlay."
+        ),
         "sample_lightweight_rendering": is_sample,
         "rendering": "WebGL2 high-density point-sprite Gaussian splats with outline-only Japan context; not Plotly mesh ellipsoids",
         "not_prediction": True,

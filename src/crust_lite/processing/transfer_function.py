@@ -50,6 +50,11 @@ OPTIONAL_SPECTRA_COLUMNS = {
     "calibration_applied",
     "calib",
     "scale",
+    "sensitivity_removed",
+    "nano_scale_applied",
+    "conversion_method",
+    "conversion_formula",
+    "orientation_applied",
     "cmpaz_deg",
     "cmpinc_deg",
     "station_elevation_m",
@@ -78,11 +83,15 @@ def _calibration_metadata(fieldnames: set[str], *, is_sample: bool, source_path:
         "physical_calibration_column_present": has_calibration_flag,
         "physical_calibration_applied": False if not has_calibration_flag else "per_row_calibration_applied_column",
         "unit_interpretation": (
-            "Relative spectra unless each row proves calibration_applied=true and documents physical_unit. "
-            "Hi-net AD/SAC converter output must not be assumed to be physical ground motion without channel response metadata."
+            "Relative spectra unless each row documents the conversion method. Hi-net win2sac/HinetPy rows are treated as "
+            "sensitivity-removed physical quantities scaled by 1e9 when sensitivity_removed=true and nano_scale_applied=true."
+        ),
+        "conversion_reference": (
+            "Hi-net data are distributed in win32 format. win2sac/HinetPy conversion follows the channel-table gain convention: "
+            "gain = [8] * 10^([12] / 20) / [13]; physical_quantity = counts / gain; SAC output = physical_quantity * 1e9."
         ),
         "orientation_interpretation": (
-            "Station/component azimuth and incidence are metadata only at this stage; horizontal rotation and response removal are not applied."
+            "Station/component azimuth and incidence are metadata only at this stage; horizontal rotation is not applied."
         ),
     }
 
@@ -269,6 +278,11 @@ def _estimate_transfer_functions_db(
             _sql_optional(fieldnames, "calibration_applied", "FALSE", "BOOLEAN"),
             _sql_optional(fieldnames, "calib", "1.0", "DOUBLE"),
             _sql_optional(fieldnames, "scale", "1.0", "DOUBLE"),
+            _sql_optional(fieldnames, "sensitivity_removed", "FALSE", "BOOLEAN"),
+            _sql_optional(fieldnames, "nano_scale_applied", "FALSE", "BOOLEAN"),
+            _sql_optional(fieldnames, "conversion_method", "'unknown'", "VARCHAR"),
+            _sql_optional(fieldnames, "conversion_formula", "''", "VARCHAR"),
+            _sql_optional(fieldnames, "orientation_applied", "FALSE", "BOOLEAN"),
             _sql_optional(fieldnames, "cmpaz_deg", "NULL", "DOUBLE"),
             _sql_optional(fieldnames, "cmpinc_deg", "NULL", "DOUBLE"),
             _sql_optional(fieldnames, "station_elevation_m", "NULL", "DOUBLE"),
@@ -478,6 +492,11 @@ def estimate_transfer_functions(config: AppConfig, paths: ProjectPaths, sample: 
                 "calibration_applied": str(row.get("calibration_applied", "false")).lower() in {"1", "true", "yes"},
                 "calib": float(row.get("calib", 1.0) or 1.0),
                 "scale": float(row.get("scale", 1.0) or 1.0),
+                "sensitivity_removed": str(row.get("sensitivity_removed", "false")).lower() in {"1", "true", "yes"},
+                "nano_scale_applied": str(row.get("nano_scale_applied", "false")).lower() in {"1", "true", "yes"},
+                "conversion_method": row.get("conversion_method", "unknown"),
+                "conversion_formula": row.get("conversion_formula", ""),
+                "orientation_applied": str(row.get("orientation_applied", "false")).lower() in {"1", "true", "yes"},
                 "cmpaz_deg": float(row["cmpaz_deg"]) if row.get("cmpaz_deg") not in (None, "") else None,
                 "cmpinc_deg": float(row["cmpinc_deg"]) if row.get("cmpinc_deg") not in (None, "") else None,
                 "station_elevation_m": float(row["station_elevation_m"]) if row.get("station_elevation_m") not in (None, "") else None,

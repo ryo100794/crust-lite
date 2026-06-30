@@ -24,9 +24,13 @@ import yaml
 from obspy import read  # type: ignore
 
 FREQUENCIES_HZ = [0.5, 1.0, 2.0, 4.0, 8.0]
-UNIT_STATUS = "uncalibrated_or_sac_converter_units"
-PHYSICAL_UNIT = "unknown"
-CALIBRATION_APPLIED = False
+UNIT_STATUS_WIN2SAC = "win2sac32_sensitivity_removed_x1e9"
+PHYSICAL_UNIT_WIN2SAC = "physical_quantity_scaled_1e9"
+CONVERSION_METHOD_WIN2SAC = "HinetPy.win32.extract_sac_or_win2sac_32"
+CONVERSION_FORMULA_WIN2SAC = (
+    "Hi-net channel-table convention: gain = [8] * 10^([12] / 20) / [13]; "
+    "physical_quantity = counts / gain; SAC output is physical_quantity * 1e9"
+)
 SPECTRA_FIELDS = [
     "event_id",
     "station_id",
@@ -44,8 +48,13 @@ SPECTRA_FIELDS = [
     "calibration_applied",
     "calib",
     "scale",
+    "sensitivity_removed",
+    "nano_scale_applied",
+    "conversion_method",
+    "conversion_formula",
     "cmpaz_deg",
     "cmpinc_deg",
+    "orientation_applied",
     "station_elevation_m",
     "station_depth_m",
     "phase_rad",
@@ -68,8 +77,13 @@ FEATURE_FIELDS = [
     "calibration_applied",
     "calib",
     "scale",
+    "sensitivity_removed",
+    "nano_scale_applied",
+    "conversion_method",
+    "conversion_formula",
     "cmpaz_deg",
     "cmpinc_deg",
+    "orientation_applied",
     "station_elevation_m",
     "station_depth_m",
     "p_residual_s",
@@ -110,22 +124,57 @@ def _parse_time(value: str) -> datetime:
     return datetime.fromisoformat(str(value).replace("Z", "+00:00")).astimezone(UTC)
 
 
-def _read_events(path: Path, min_mag: float, max_events: int) -> list[dict[str, Any]]:
+def _select_events_by_policy(events: list[dict[str, Any]], max_events: int, selection: str) -> list[dict[str, Any]]:
+    if max_events <= 0 or len(events) <= max_events:
+        return sorted(events, key=lambda row: row["_time"], reverse=True)
+    if selection == "recent":
+        return sorted(events, key=lambda row: row["_time"], reverse=True)[:max_events]
+    if selection == "smallest":
+        return sorted(events, key=lambda row: (float(row["_mag"]), row["_time"]))[:max_events]
+    if selection != "stratified":
+        return sorted(events, key=lambda row: (float(row["_mag"]), row["_time"]), reverse=True)[:max_events]
+
+    bins: list[tuple[float, float]] = [(2.0, 3.0), (3.0, 4.0), (4.0, 5.0), (5.0, float("inf"))]
+    groups: list[list[dict[str, Any]]] = []
+    for low, high in bins:
+        group = [row for row in events if low <= float(row["_mag"]) < high]
+        group.sort(key=lambda row: row["_time"], reverse=True)
+        if group:
+            groups.append(group)
+    if not groups:
+        return sorted(events, key=lambda row: (float(row["_mag"]), row["_time"]), reverse=True)[:max_events]
+    selected: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    cursor = 0
+    while len(selected) < max_events and groups:
+        group = groups[cursor % len(groups)]
+        if group:
+            row = group.pop(0)
+            event_id = str(row.get("event_id", ""))
+            if event_id not in seen:
+                selected.append(row)
+                seen.add(event_id)
+        groups = [group for group in groups if group]
+        cursor += 1
+    return selected
+
+
+def _read_events(path: Path, min_mag: float, max_events: int, selection: str = "largest") -> list[dict[str, Any]]:
     with path.open("r", encoding="utf-8", newline="") as fh:
         rows = [dict(row) for row in csv.DictReader(fh)]
-    out = []
+    filtered = []
     for row in rows:
         try:
             row["_mag"] = float(row.get("magnitude", 0.0) or 0.0)
             row["_time"] = _parse_time(str(row["time_utc"]))
             row["_lat"] = float(row["lat"])
             row["_lon"] = float(row["lon"])
+            row["_depth_km"] = float(row.get("depth_km", 0.0) or 0.0)
         except Exception:
             continue
         if row["_mag"] >= min_mag:
-            out.append(row)
-    out.sort(key=lambda row: (float(row["_mag"]), row["_time"]), reverse=True)
-    return out[:max_events] if max_events > 0 else out
+            filtered.append(row)
+    return _select_events_by_policy(filtered, max_events, selection)
 
 
 def _event_csv_from_config(config_path: Path) -> Path:
@@ -339,7 +388,7 @@ def _sac_headers(trace: Any) -> dict[str, Any]:
             value = float(value)
         except (TypeError, ValueError):
             return default
-        if not math.isfinite(value):
+        if not math.isfinite(value) or value == -12345.0:
             return default
         return value
 
@@ -357,27 +406,39 @@ def _sac_headers(trace: Any) -> dict[str, Any]:
 
 def _unit_metadata(sac_headers: dict[str, Any]) -> dict[str, Any]:
     return {
-        "unit_status": UNIT_STATUS,
-        "physical_unit": PHYSICAL_UNIT,
-        "calibration_applied": CALIBRATION_APPLIED,
+        "unit_status": UNIT_STATUS_WIN2SAC,
+        "physical_unit": PHYSICAL_UNIT_WIN2SAC,
+        "calibration_applied": True,
         "calib": sac_headers["calib"],
         "scale": sac_headers["scale"],
+        "sensitivity_removed": True,
+        "nano_scale_applied": True,
+        "conversion_method": CONVERSION_METHOD_WIN2SAC,
+        "conversion_formula": CONVERSION_FORMULA_WIN2SAC,
         "cmpaz_deg": sac_headers["cmpaz_deg"],
         "cmpinc_deg": sac_headers["cmpinc_deg"],
+        "orientation_applied": False,
         "station_elevation_m": sac_headers["station_elevation_m"],
         "station_depth_m": sac_headers["station_depth_m"],
     }
 
 
-def _spectra(data: np.ndarray, sampling_rate: float, trace: Any, path: Path, event: dict[str, Any], source: str) -> list[dict[str, Any]]:
+def _spectra(
+    data: np.ndarray,
+    sampling_rate: float,
+    trace: Any,
+    path: Path,
+    event: dict[str, Any],
+    source: str,
+    sac_headers: dict[str, Any],
+    unit_metadata: dict[str, Any],
+) -> list[dict[str, Any]]:
     """Convert SAC traces into the shared phase-aware spectrum schema."""
     station_id, network, station, location, channel = _station_id(trace, path)
     window = np.hanning(data.size)
     fft = np.fft.rfft(data * window)
     freqs = np.fft.rfftfreq(data.size, d=1.0 / sampling_rate)
     phase_unwrapped = np.unwrap(np.angle(fft))
-    sac_headers = _sac_headers(trace)
-    unit_metadata = _unit_metadata(sac_headers)
     lat = sac_headers["lat"]
     lon = sac_headers["lon"]
     rows: list[dict[str, Any]] = []
@@ -417,10 +478,16 @@ def _spectra(data: np.ndarray, sampling_rate: float, trace: Any, path: Path, eve
     return rows
 
 
-def _feature(data: np.ndarray, sampling_rate: float, trace: Any, path: Path, event: dict[str, Any], source: str) -> dict[str, Any]:
+def _feature(
+    data: np.ndarray,
+    sampling_rate: float,
+    trace: Any,
+    path: Path,
+    event: dict[str, Any],
+    source: str,
+    unit_metadata: dict[str, Any],
+) -> dict[str, Any]:
     station_id, _network, _station, _location, channel = _station_id(trace, path)
-    sac_headers = _sac_headers(trace)
-    unit_metadata = _unit_metadata(sac_headers)
     dt = 1.0 / sampling_rate
     vel = np.cumsum(data) * dt
     pga = float(np.max(np.abs(data)))
@@ -460,7 +527,7 @@ def collect(args: argparse.Namespace) -> dict[str, Any]:
     )
     config_path = Path(args.config)
     event_csv = Path(args.event_csv) if args.event_csv else _event_csv_from_config(config_path)
-    events = _read_events(event_csv, args.min_magnitude, args.max_events)
+    events = _read_events(event_csv, args.min_magnitude, args.max_events, args.event_selection)
     spectra_output = Path(args.output)
     feature_output = Path(args.feature_output)
     raw_root = Path(args.raw_dir)
@@ -476,6 +543,7 @@ def collect(args: argparse.Namespace) -> dict[str, Any]:
         "spectra_rows": 0,
         "feature_rows": 0,
         "failures": [],
+        "warnings": [],
     }
     for index, event in enumerate(events, start=1):
         event_dir = raw_root / str(event["_time"].year) / str(event["event_id"])
@@ -518,15 +586,47 @@ def collect(args: argparse.Namespace) -> dict[str, Any]:
             for sac in sac_files:
                 try:
                     trace, data, sampling_rate = _prepare_trace(sac)
-                    source = f"NIED authenticated archive; response_not_removed; network={args.network_code}; station_group={label}; raw_dir={raw_dir}; sac={sac}"
-                    spectra_rows = _spectra(data, sampling_rate, trace, sac, event, source)
+                    sac_headers = _sac_headers(trace)
+                    if args.apply_sac_calib and len(totals["warnings"]) < args.max_failures_recorded:
+                        totals["warnings"].append(
+                            {
+                                "event_id": event.get("event_id"),
+                                "stage": "sac_calib_scale",
+                                "file": str(sac),
+                                "warning": "--apply-sac-calib is deprecated and is intentionally a no-op. Hi-net win2sac SAC data is already sensitivity-removed and scaled by 1e9.",
+                                "calibration_applied": True,
+                            }
+                        )
+                    unit_metadata = _unit_metadata(sac_headers)
+                    source = (
+                        "NIED Hi-net authenticated archive; win2sac32_sensitivity_removed_x1e9; "
+                        f"sac_calib_scale_requested_deprecated_noop={str(args.apply_sac_calib).lower()}; "
+                        "sac_calib_scale_applied=false; "
+                        "orientation_applied=false; "
+                        f"network={args.network_code}; station_group={label}; raw_dir={raw_dir}; sac={sac}"
+                    )
+                    spectra_rows = _spectra(
+                        data,
+                        sampling_rate,
+                        trace,
+                        sac,
+                        event,
+                        source,
+                        sac_headers,
+                        unit_metadata,
+                    )
                     spectra_rows = [
                         row for row in spectra_rows
-                        if (str(row["event_id"]), str(row["station_id"]), str(row["channel"]), float(row["frequency_hz"])) not in existing
+                        if (
+                            str(row["event_id"]),
+                            str(row["station_id"]),
+                            str(row["channel"]),
+                            float(row["frequency_hz"]),
+                        ) not in existing
                     ]
                     if not spectra_rows:
                         continue
-                    feature_row = _feature(data, sampling_rate, trace, sac, event, source)
+                    feature_row = _feature(data, sampling_rate, trace, sac, event, source, unit_metadata)
                 except Exception as exc:
                     if len(totals["failures"]) < args.max_failures_recorded:
                         totals["failures"].append({"event_id": event.get("event_id"), "stage": "spectra", "file": str(sac), "error": f"{type(exc).__name__}: {exc}"})
@@ -562,6 +662,15 @@ def collect(args: argparse.Namespace) -> dict[str, Any]:
         "tool_path": args.tool_path,
         "min_magnitude": args.min_magnitude,
         "max_events": args.max_events,
+        "event_selection": args.event_selection,
+        "apply_sac_calib": args.apply_sac_calib,
+        "apply_sac_calib_behavior": "deprecated_noop_to_avoid_double_calibration",
+        "calibration_formula": CONVERSION_FORMULA_WIN2SAC,
+        "calibration_limitations": (
+            "The Hi-net SAC conversion path is treated as sensitivity-removed and scaled by 1e9 according to win2sac/HinetPy documentation. "
+            "Component orientation is preserved as metadata but traces are not rotated into a common frame."
+        ),
+        "orientation_applied": False,
         "representation": "Hi-net waveform windows converted to phase-preserving complex spectra",
         "credential_source": "environment_or_env_file_without_logging_values",
         "not_prediction": True,
@@ -582,6 +691,7 @@ def main() -> None:
     parser.add_argument("--env-file", default="/workspace/equake/secrets/hinet.env")
     parser.add_argument("--min-magnitude", type=float, default=5.5)
     parser.add_argument("--max-events", type=int, default=100)
+    parser.add_argument("--event-selection", choices=["largest", "smallest", "recent", "stratified"], default="largest")
     parser.add_argument("--network-code", default="0101")
     parser.add_argument("--stations", default="", help="Semicolon-separated station groups; each group uses comma or colon-separated station names.")
     parser.add_argument("--minutes", type=int, default=15)
@@ -596,6 +706,11 @@ def main() -> None:
     parser.add_argument("--sleep-time-s", type=float, default=5.0)
     parser.add_argument("--max-sleep-count", type=int, default=30)
     parser.add_argument("--win2sac-command", default="")
+    parser.add_argument(
+        "--apply-sac-calib",
+        action="store_true",
+        help="Deprecated no-op kept for compatibility; Hi-net win2sac SAC output is already sensitivity-removed and scaled by 1e9.",
+    )
     parser.add_argument("--max-failures-recorded", type=int, default=200)
     args = parser.parse_args()
     collect(args)

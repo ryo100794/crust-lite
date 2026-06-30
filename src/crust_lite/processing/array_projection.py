@@ -116,6 +116,7 @@ SPLAT_COLUMNS = [
     "depth_method",
     "depth_artifact_risk",
     "depth_uncertainty_km",
+    "depth_uncertainty_z_m",
     "depth_p05_km",
     "depth_p50_km",
     "depth_p95_km",
@@ -1169,6 +1170,7 @@ def build_waveform_array_projection(
             "projection_refinement_steps": config.waveform_array.projection_refinement_steps,
             "primitive_depth_metadata_columns": [
                 "depth_uncertainty_km",
+                "depth_uncertainty_z_m",
                 "sigma_z_m",
                 "depth_p05_km",
                 "depth_p50_km",
@@ -1196,9 +1198,10 @@ def build_waveform_array_projection(
             "primitive_type_counts": _count_values(splat_rows, "primitive_type"),
             "path_family_counts": _count_values(splat_rows, "path_family"),
             "splat_role_counts": _count_values(splat_rows, "splat_role"),
-            "depth_uncertainty_policy": "sigma_z_m includes depth_uncertainty_km; p05-p95 and refinement columns remain primitive metadata for GPU diagnostics",
+            "depth_uncertainty_policy": "depth uncertainty is metadata by default; sigma_z_m uses resolution only unless waveform_array.use_depth_uncertainty_in_splat_sigma=true",
             "primitive_depth_metadata_columns": [
                 "depth_uncertainty_km",
+                "depth_uncertainty_z_m",
                 "sigma_z_m",
                 "depth_p05_km",
                 "depth_p50_km",
@@ -1250,6 +1253,7 @@ def build_waveform_array_projection(
         "projection_refinement_steps": config.waveform_array.projection_refinement_steps,
         "primitive_depth_metadata_columns": [
             "depth_uncertainty_km",
+            "depth_uncertainty_z_m",
             "sigma_z_m",
             "depth_p05_km",
             "depth_p50_km",
@@ -1260,7 +1264,8 @@ def build_waveform_array_projection(
             "projection_refinement_score_gain",
             "projection_refinement_method",
         ],
-        "depth_uncertainty_policy": "depth_p50_km is the projected center; p05-p95 preserves velocity/residual uncertainty; sigma_z_m carries this uncertainty into voxel density",
+        "depth_uncertainty_policy": "depth_p50_km is the projected center; p05-p95 preserves velocity/residual uncertainty; sigma_z_m uses resolution only by default so uncertainty does not blur the density field",
+        "use_depth_uncertainty_in_splat_sigma": config.waveform_array.use_depth_uncertainty_in_splat_sigma,
         "uses_phase": config.waveform_array.use_phase,
         "uses_group_delay": config.waveform_array.use_group_delay,
         "not_prediction": True,
@@ -1353,10 +1358,15 @@ def _build_splats(config: AppConfig, projection_rows: list[dict[str, Any]], is_s
         amplitude = raw_amplitude
         array_coherence = clamp01(float(row.get("array_coherence", amplitude) or 0.0))
         sigma_xy = float(row.get("gaussian_splat_sigma_m", config.waveform_array.splat_sigma_horizontal_m) or 0.0)
-        sigma_z = max(
+        resolution_sigma_z_m = max(
             float(config.waveform_array.splat_sigma_vertical_m),
             min(float(config.waveform_array.resolution_sigma_max_m), 0.6 * sigma_xy),
-            depth_uncertainty_km * 1000.0,
+        )
+        depth_uncertainty_z_m = max(0.0, depth_uncertainty_km * 1000.0)
+        sigma_z = (
+            max(resolution_sigma_z_m, depth_uncertainty_z_m)
+            if config.waveform_array.use_depth_uncertainty_in_splat_sigma
+            else resolution_sigma_z_m
         )
         primitive_type = str(row.get("primitive_type", "direct") or "direct")
         color_r, color_g, color_b = _primitive_rgb(amplitude, primitive_type)
@@ -1381,6 +1391,7 @@ def _build_splats(config: AppConfig, projection_rows: list[dict[str, Any]], is_s
                 "depth_method": row.get("depth_method", "event_catalog_depth_fixed_to_direct_projection" if primitive_type == "direct" else "event_depth_plus_half_extra_path_homogeneous_velocity"),
                 "depth_artifact_risk": row.get("depth_artifact_risk", "catalog_depth_quantization_possible" if primitive_type == "direct" else "model_derived_depth"),
                 "depth_uncertainty_km": depth_uncertainty_km,
+                "depth_uncertainty_z_m": depth_uncertainty_z_m,
                 "depth_p05_km": depth_p05_km,
                 "depth_p50_km": depth_p50_km,
                 "depth_p95_km": depth_p95_km,

@@ -13,7 +13,8 @@ import csv
 import json
 import math
 import time
-from datetime import datetime, timedelta, timezone
+from contextlib import suppress
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -59,10 +60,45 @@ FEATURE_FIELDS = [
 
 
 def _parse_time(value: str) -> datetime:
-    return datetime.fromisoformat(str(value).replace("Z", "+00:00")).astimezone(timezone.utc)
+    return datetime.fromisoformat(str(value).replace("Z", "+00:00")).astimezone(UTC)
 
 
-def _read_events(path: Path, min_mag: float, max_events: int) -> list[dict[str, Any]]:
+def _select_events_by_policy(events: list[dict[str, Any]], max_events: int, selection: str) -> list[dict[str, Any]]:
+    if max_events <= 0 or len(events) <= max_events:
+        return sorted(events, key=lambda row: row["_time"], reverse=True)
+    if selection == "recent":
+        return sorted(events, key=lambda row: row["_time"], reverse=True)[:max_events]
+    if selection == "smallest":
+        return sorted(events, key=lambda row: (float(row["_mag"]), row["_time"]))[:max_events]
+    if selection != "stratified":
+        return sorted(events, key=lambda row: (float(row["_mag"]), row["_time"]), reverse=True)[:max_events]
+
+    bins: list[tuple[float, float]] = [(2.0, 3.0), (3.0, 4.0), (4.0, 5.0), (5.0, float("inf"))]
+    groups: list[list[dict[str, Any]]] = []
+    for low, high in bins:
+        group = [row for row in events if low <= float(row["_mag"]) < high]
+        group.sort(key=lambda row: row["_time"], reverse=True)
+        if group:
+            groups.append(group)
+    if not groups:
+        return sorted(events, key=lambda row: (float(row["_mag"]), row["_time"]), reverse=True)[:max_events]
+    selected: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    cursor = 0
+    while len(selected) < max_events and groups:
+        group = groups[cursor % len(groups)]
+        if group:
+            row = group.pop(0)
+            event_id = str(row.get("event_id", ""))
+            if event_id not in seen:
+                selected.append(row)
+                seen.add(event_id)
+        groups = [group for group in groups if group]
+        cursor += 1
+    return selected
+
+
+def _read_events(path: Path, min_mag: float, max_events: int, selection: str = "largest") -> list[dict[str, Any]]:
     with path.open("r", encoding="utf-8", newline="") as fh:
         rows = [dict(row) for row in csv.DictReader(fh)]
     filtered = []
@@ -77,8 +113,7 @@ def _read_events(path: Path, min_mag: float, max_events: int) -> list[dict[str, 
             continue
         if row["_mag"] >= min_mag:
             filtered.append(row)
-    filtered.sort(key=lambda row: (float(row["_mag"]), row["_time"]), reverse=True)
-    return filtered[:max_events] if max_events > 0 else filtered
+    return _select_events_by_policy(filtered, max_events, selection)
 
 
 def _event_csv_from_config(config_path: Path) -> Path:
@@ -99,10 +134,8 @@ def _existing_keys(path: Path) -> set[tuple[str, str, str, float]]:
     keys: set[tuple[str, str, str, float]] = set()
     with path.open("r", encoding="utf-8", newline="") as fh:
         for row in csv.DictReader(fh):
-            try:
+            with suppress(Exception):
                 keys.add((str(row["event_id"]), str(row["station_id"]), str(row.get("channel", "")), float(row["frequency_hz"])))
-            except Exception:
-                pass
     return keys
 
 
@@ -164,10 +197,8 @@ def _prepare_trace(trace: Any) -> tuple[np.ndarray, float]:
     tr = trace.copy()
     tr.detrend("demean")
     tr.detrend("linear")
-    try:
+    with suppress(Exception):
         tr.taper(max_percentage=0.05, type="hann")
-    except Exception:
-        pass
     data = np.asarray(tr.data, dtype=np.float64)
     if data.size < 16:
         raise ValueError("trace too short")
@@ -245,7 +276,7 @@ def collect(args: argparse.Namespace) -> dict[str, Any]:
     """Download event windows and append spectra/features in small batches."""
     config_path = Path(args.config)
     event_csv = Path(args.event_csv) if args.event_csv else _event_csv_from_config(config_path)
-    events = _read_events(event_csv, args.min_magnitude, args.max_events)
+    events = _read_events(event_csv, args.min_magnitude, args.max_events, args.event_selection)
     spectra_output = Path(args.output)
     feature_output = Path(args.feature_output)
     raw_dir = Path(args.raw_dir)
@@ -292,10 +323,8 @@ def collect(args: argparse.Namespace) -> dict[str, Any]:
                     continue
                 event_dir = raw_dir / str(event["_time"].year) / str(event["event_id"])
                 event_dir.mkdir(parents=True, exist_ok=True)
-                try:
+                with suppress(Exception):
                     stream.write(str(event_dir / f"{station_id}.mseed"), format="MSEED")
-                except Exception:
-                    pass
                 for trace in stream:
                     try:
                         data, sampling_rate = _prepare_trace(trace)
@@ -344,6 +373,7 @@ def collect(args: argparse.Namespace) -> dict[str, Any]:
         "channel": args.channel,
         "min_magnitude": args.min_magnitude,
         "max_events": args.max_events,
+        "event_selection": args.event_selection,
         "max_traces": args.max_traces,
         "skip_existing_events": args.skip_existing_events,
         "representation": "complex spectra retaining phase_rad and group_delay_s plus raw MiniSEED windows",
@@ -367,6 +397,7 @@ def main() -> None:
     parser.add_argument("--channel", default="BH?,HH?,HN?")
     parser.add_argument("--min-magnitude", type=float, default=6.0)
     parser.add_argument("--max-events", type=int, default=100)
+    parser.add_argument("--event-selection", choices=["largest", "smallest", "recent", "stratified"], default="largest")
     parser.add_argument("--max-stations-per-event", type=int, default=25)
     parser.add_argument("--max-traces", type=int, default=1000)
     parser.add_argument("--max-spectra-rows-per-event", type=int, default=500)

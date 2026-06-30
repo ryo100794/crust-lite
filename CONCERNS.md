@@ -83,3 +83,11 @@
 - Existing merged CSV lacks `calibration_applied`, `physical_unit`, `cmpaz_deg`, and `cmpinc_deg`; regenerated sidecars now record `physical_calibration_applied=false` and `station_orientation_columns_present=false`.
 - Hi-net collector now preserves SAC `calib`, `scale`, `cmpaz`, `cmpinc`, station elevation/depth when available, but does not apply official response removal or component rotation yet.
 - Required v1 fix: load authoritative NIED channel/response metadata, apply AD-count-to-physical-unit conversion per station/component/time, validate against SAC PZ/StationXML, and rotate components using installation orientation before absolute-amplitude analyses.
+
+## 2026-06-30 Hi-net Small-Event Ingest
+
+- USGS ComCat nationwide M2 query is not a sufficient small-earthquake source around Japan: the 2000-2026 M2/depth700 pull returned 40,494 events but only 3 rows in M2-3. Hi-net/JMA authenticated catalogs are required for dense small-event work.
+- Hi-net 0101 all-station continuous waveform download failed as one request. The working path is to build station groups from the authenticated station CSV; East Japan currently resolves to 563 Hi-net stations split into 8 groups of about 80 stations each.
+- Hi-net WIN32 conversion tools (`catwin32`, `win2sac_32`) must exist under the workspace, e.g. `.deps/hinet-win32tools/bin`; missing tools caused downloads to fail after request preparation.
+- HinetPy/win2sac SAC output is treated as sensitivity-removed and scaled by 1e9. Do not multiply SAC data again by `calib * scale`; keep orientation metadata and defer component rotation.
+- USGS mechanism-detail collection may stall on public API detail requests. Use append-only CSV, smaller worker counts, and resume rather than discarding partial mechanism rows.
