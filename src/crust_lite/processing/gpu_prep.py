@@ -681,6 +681,19 @@ def _write_manifest(config: AppConfig, paths: ProjectPaths, result: dict[str, An
         "view_image_part_index": view_part_index,
         "view_image_partitions": f"{view_partition_dir}/part-*.parquet",
         "primitive_source": "data/processed/gaussian_splat_primitive.parquet",
+        "primitive_depth_metadata_columns": [
+            "depth_uncertainty_km",
+            "sigma_z_m",
+            "depth_p05_km",
+            "depth_p50_km",
+            "depth_p95_km",
+            "depth_uncertainty_method",
+            "projection_refinement_dx_m",
+            "projection_refinement_dy_m",
+            "projection_refinement_score_gain",
+            "projection_refinement_method",
+        ],
+        "voxel_depth_policy": "voxel_lod keeps compact density columns; z uncertainty is already folded into sigma_z_m during primitive expansion",
     }
     if result.get("view_image_status") != "partitioned":
         gpu_handoff["view_image_pixels"] = "data/processed/splat_view_image_pixel.parquet"

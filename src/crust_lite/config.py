@@ -73,6 +73,12 @@ class WaveformArrayConfig:
     projection_grid_km: float = 20.0
     projection_radius_km: float = 80.0
     velocity_km_s: float = 3.5
+    depth_velocity_min_km_s: float = 2.8
+    depth_velocity_max_km_s: float = 4.6
+    depth_velocity_samples: int = 7
+    projection_refinement_enabled: bool = True
+    projection_refinement_fraction: float = 0.5
+    projection_refinement_steps: int = 1
     delay_sigma_s: float = 0.35
     late_phase_max_delay_s: float = 30.0
     reject_late_delay_clipped: bool = True
@@ -283,6 +289,16 @@ def parse_config(raw: dict[str, Any]) -> AppConfig:
         raise ValueError("waveform_array projection grid and radius must be positive")
     if waveform_array.velocity_km_s <= 0:
         raise ValueError("waveform_array.velocity_km_s must be positive")
+    if waveform_array.depth_velocity_min_km_s <= 0 or waveform_array.depth_velocity_max_km_s <= 0:
+        raise ValueError("waveform_array depth velocity bounds must be positive")
+    if waveform_array.depth_velocity_min_km_s > waveform_array.depth_velocity_max_km_s:
+        raise ValueError("waveform_array.depth_velocity_min_km_s must be <= depth_velocity_max_km_s")
+    if waveform_array.depth_velocity_samples <= 0:
+        raise ValueError("waveform_array.depth_velocity_samples must be positive")
+    if waveform_array.projection_refinement_fraction <= 0:
+        raise ValueError("waveform_array.projection_refinement_fraction must be positive")
+    if waveform_array.projection_refinement_steps < 0:
+        raise ValueError("waveform_array.projection_refinement_steps must be non-negative")
     if waveform_array.delay_sigma_s <= 0:
         raise ValueError("waveform_array.delay_sigma_s must be positive")
     if waveform_array.late_phase_max_delay_s <= 0:

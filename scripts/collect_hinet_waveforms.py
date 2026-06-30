@@ -14,8 +14,8 @@ import json
 import math
 import os
 import subprocess
-import tempfile
-from datetime import datetime, timedelta, timezone
+from contextlib import suppress
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +24,9 @@ import yaml
 from obspy import read  # type: ignore
 
 FREQUENCIES_HZ = [0.5, 1.0, 2.0, 4.0, 8.0]
+UNIT_STATUS = "uncalibrated_or_sac_converter_units"
+PHYSICAL_UNIT = "unknown"
+CALIBRATION_APPLIED = False
 SPECTRA_FIELDS = [
     "event_id",
     "station_id",
@@ -36,6 +39,15 @@ SPECTRA_FIELDS = [
     "lon",
     "frequency_hz",
     "amplitude",
+    "unit_status",
+    "physical_unit",
+    "calibration_applied",
+    "calib",
+    "scale",
+    "cmpaz_deg",
+    "cmpinc_deg",
+    "station_elevation_m",
+    "station_depth_m",
     "phase_rad",
     "group_delay_s",
     "p_residual_s",
@@ -51,6 +63,15 @@ FEATURE_FIELDS = [
     "psa_0p3",
     "psa_1p0",
     "psa_3p0",
+    "unit_status",
+    "physical_unit",
+    "calibration_applied",
+    "calib",
+    "scale",
+    "cmpaz_deg",
+    "cmpinc_deg",
+    "station_elevation_m",
+    "station_depth_m",
     "p_residual_s",
     "s_residual_s",
     "amp_residual_log",
@@ -86,7 +107,7 @@ def _credentials(env_file: Path | None) -> tuple[str, str]:
 
 
 def _parse_time(value: str) -> datetime:
-    return datetime.fromisoformat(str(value).replace("Z", "+00:00")).astimezone(timezone.utc)
+    return datetime.fromisoformat(str(value).replace("Z", "+00:00")).astimezone(UTC)
 
 
 def _read_events(path: Path, min_mag: float, max_events: int) -> list[dict[str, Any]]:
@@ -121,11 +142,33 @@ def _event_csv_from_config(config_path: Path) -> Path:
 def _append(path: Path, rows: list[dict[str, Any]], fields: list[str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     write_header = not path.exists() or path.stat().st_size == 0
+    fieldnames = fields
+    if not write_header:
+        fieldnames = _ensure_csv_fields(path, fields)
     with path.open("a", encoding="utf-8", newline="") as fh:
-        writer = csv.DictWriter(fh, fieldnames=fields, extrasaction="ignore")
+        writer = csv.DictWriter(fh, fieldnames=fieldnames, extrasaction="ignore")
         if write_header:
             writer.writeheader()
         writer.writerows(rows)
+
+
+def _ensure_csv_fields(path: Path, fields: list[str]) -> list[str]:
+    """Expand an existing CSV header before appending rows with newly added fields."""
+    with path.open("r", encoding="utf-8", newline="") as fh:
+        reader = csv.DictReader(fh)
+        existing_fields = list(reader.fieldnames or [])
+        if not existing_fields:
+            return fields
+        missing = [field for field in fields if field not in existing_fields]
+        if not missing:
+            return existing_fields
+        rows = list(reader)
+    fieldnames = existing_fields + missing
+    with path.open("w", encoding="utf-8", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
+    return fieldnames
 
 
 def _existing_keys(path: Path) -> set[tuple[str, str, str, float]]:
@@ -135,10 +178,8 @@ def _existing_keys(path: Path) -> set[tuple[str, str, str, float]]:
     keys: set[tuple[str, str, str, float]] = set()
     with path.open("r", encoding="utf-8", newline="") as fh:
         for row in csv.DictReader(fh):
-            try:
+            with suppress(Exception):
                 keys.add((str(row["event_id"]), str(row["station_id"]), str(row.get("channel", "")), float(row["frequency_hz"])))
-            except Exception:
-                pass
     return keys
 
 
@@ -266,10 +307,8 @@ def _prepare_trace(path: Path) -> tuple[Any, np.ndarray, float]:
     trace = stream[0]
     trace.detrend("demean")
     trace.detrend("linear")
-    try:
+    with suppress(Exception):
         trace.taper(max_percentage=0.05, type="hann")
-    except Exception:
-        pass
     data = np.asarray(trace.data, dtype=np.float64)
     data = np.nan_to_num(data, nan=0.0, posinf=0.0, neginf=0.0)
     if data.size < 16:
@@ -286,6 +325,50 @@ def _station_id(trace: Any, path: Path) -> tuple[str, str, str, str, str]:
     return station_id, network, station, location, channel
 
 
+def _sac_headers(trace: Any) -> dict[str, Any]:
+    sac = getattr(getattr(trace, "stats", None), "sac", None)
+
+    def read_float(name: str, default: Any = "") -> Any:
+        if sac is None:
+            return default
+        try:
+            value = sac.get(name, default)
+        except AttributeError:
+            value = getattr(sac, name, default)
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            return default
+        if not math.isfinite(value):
+            return default
+        return value
+
+    return {
+        "lat": read_float("stla", 0.0),
+        "lon": read_float("stlo", 0.0),
+        "calib": read_float("calib"),
+        "scale": read_float("scale"),
+        "cmpaz_deg": read_float("cmpaz"),
+        "cmpinc_deg": read_float("cmpinc"),
+        "station_elevation_m": read_float("stel"),
+        "station_depth_m": read_float("stdp"),
+    }
+
+
+def _unit_metadata(sac_headers: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "unit_status": UNIT_STATUS,
+        "physical_unit": PHYSICAL_UNIT,
+        "calibration_applied": CALIBRATION_APPLIED,
+        "calib": sac_headers["calib"],
+        "scale": sac_headers["scale"],
+        "cmpaz_deg": sac_headers["cmpaz_deg"],
+        "cmpinc_deg": sac_headers["cmpinc_deg"],
+        "station_elevation_m": sac_headers["station_elevation_m"],
+        "station_depth_m": sac_headers["station_depth_m"],
+    }
+
+
 def _spectra(data: np.ndarray, sampling_rate: float, trace: Any, path: Path, event: dict[str, Any], source: str) -> list[dict[str, Any]]:
     """Convert SAC traces into the shared phase-aware spectrum schema."""
     station_id, network, station, location, channel = _station_id(trace, path)
@@ -293,8 +376,10 @@ def _spectra(data: np.ndarray, sampling_rate: float, trace: Any, path: Path, eve
     fft = np.fft.rfft(data * window)
     freqs = np.fft.rfftfreq(data.size, d=1.0 / sampling_rate)
     phase_unwrapped = np.unwrap(np.angle(fft))
-    lat = float(getattr(trace.stats, "sac", {}).get("stla", 0.0)) if hasattr(trace.stats, "sac") else 0.0
-    lon = float(getattr(trace.stats, "sac", {}).get("stlo", 0.0)) if hasattr(trace.stats, "sac") else 0.0
+    sac_headers = _sac_headers(trace)
+    unit_metadata = _unit_metadata(sac_headers)
+    lat = sac_headers["lat"]
+    lon = sac_headers["lon"]
     rows: list[dict[str, Any]] = []
     for freq in FREQUENCIES_HZ:
         if freq <= freqs[0] or freq >= freqs[-1]:
@@ -321,6 +406,7 @@ def _spectra(data: np.ndarray, sampling_rate: float, trace: Any, path: Path, eve
                 "lon": lon,
                 "frequency_hz": freq,
                 "amplitude": max(amp, 1e-30),
+                **unit_metadata,
                 "phase_rad": phase,
                 "group_delay_s": group_delay,
                 "p_residual_s": 0.0,
@@ -333,6 +419,8 @@ def _spectra(data: np.ndarray, sampling_rate: float, trace: Any, path: Path, eve
 
 def _feature(data: np.ndarray, sampling_rate: float, trace: Any, path: Path, event: dict[str, Any], source: str) -> dict[str, Any]:
     station_id, _network, _station, _location, channel = _station_id(trace, path)
+    sac_headers = _sac_headers(trace)
+    unit_metadata = _unit_metadata(sac_headers)
     dt = 1.0 / sampling_rate
     vel = np.cumsum(data) * dt
     pga = float(np.max(np.abs(data)))
@@ -346,6 +434,7 @@ def _feature(data: np.ndarray, sampling_rate: float, trace: Any, path: Path, eve
         "psa_0p3": pga,
         "psa_1p0": pga,
         "psa_3p0": pga,
+        **unit_metadata,
         "p_residual_s": 0.0,
         "s_residual_s": 0.0,
         "amp_residual_log": math.log(max(pga, 1e-30)) - float(event.get("_mag", 0.0)),
@@ -429,7 +518,7 @@ def collect(args: argparse.Namespace) -> dict[str, Any]:
             for sac in sac_files:
                 try:
                     trace, data, sampling_rate = _prepare_trace(sac)
-                    source = f"NIED authenticated archive; network={args.network_code}; station_group={label}; raw_dir={raw_dir}; sac={sac}"
+                    source = f"NIED authenticated archive; response_not_removed; network={args.network_code}; station_group={label}; raw_dir={raw_dir}; sac={sac}"
                     spectra_rows = _spectra(data, sampling_rate, trace, sac, event, source)
                     spectra_rows = [
                         row for row in spectra_rows

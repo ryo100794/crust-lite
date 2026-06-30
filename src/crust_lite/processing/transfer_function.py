@@ -43,8 +43,54 @@ SPECTRA_COLUMNS = {
     "phase_rad",
     "group_delay_s",
 }
+OPTIONAL_SPECTRA_COLUMNS = {
+    "source",
+    "unit_status",
+    "physical_unit",
+    "calibration_applied",
+    "calib",
+    "scale",
+    "cmpaz_deg",
+    "cmpinc_deg",
+    "station_elevation_m",
+    "station_depth_m",
+}
 
 
+def _fieldnames(path: Path) -> set[str]:
+    with path.open("r", encoding="utf-8", newline="") as fh:
+        reader = csv.DictReader(fh)
+        return set(reader.fieldnames or [])
+
+
+def _calibration_metadata(fieldnames: set[str], *, is_sample: bool, source_path: Path | str) -> dict[str, Any]:
+    available = sorted(OPTIONAL_SPECTRA_COLUMNS.intersection(fieldnames))
+    has_orientation = {"cmpaz_deg", "cmpinc_deg"}.issubset(fieldnames)
+    has_position = {"lat", "lon"}.issubset(fieldnames)
+    has_calibration_flag = "calibration_applied" in fieldnames
+    return {
+        "is_sample_data": is_sample,
+        "source_path": str(source_path),
+        "representation": "complex_spectrum_with_group_delay",
+        "optional_waveform_metadata_columns": available,
+        "station_position_columns_present": has_position,
+        "station_orientation_columns_present": has_orientation,
+        "physical_calibration_column_present": has_calibration_flag,
+        "physical_calibration_applied": False if not has_calibration_flag else "per_row_calibration_applied_column",
+        "unit_interpretation": (
+            "Relative spectra unless each row proves calibration_applied=true and documents physical_unit. "
+            "Hi-net AD/SAC converter output must not be assumed to be physical ground motion without channel response metadata."
+        ),
+        "orientation_interpretation": (
+            "Station/component azimuth and incidence are metadata only at this stage; horizontal rotation and response removal are not applied."
+        ),
+    }
+
+
+def _sql_optional(fieldnames: set[str], column: str, default: str, cast_type: str) -> str:
+    if column in fieldnames:
+        return f"CAST(COALESCE({column}, {default}) AS {cast_type}) AS {column}"
+    return f"CAST({default} AS {cast_type}) AS {column}"
 
 
 def _count_csv_rows(path: Path) -> int:
@@ -210,11 +256,25 @@ def _estimate_transfer_functions_db(
     # expanded into a large Python list on memory-constrained machines.
     if database_engine(paths) != "duckdb":
         raise RuntimeError("Large waveform transfer-function estimation requires source-built DuckDB")
-    with source_path.open("r", encoding="utf-8", newline="") as fh:
-        reader = csv.DictReader(fh)
-        missing = SPECTRA_COLUMNS.difference(reader.fieldnames or [])
-        if missing:
-            raise ValueError(f"Waveform spectra CSV missing columns {sorted(missing)}: {source_path}")
+    fieldnames = _fieldnames(source_path)
+    missing = SPECTRA_COLUMNS.difference(fieldnames)
+    if missing:
+        raise ValueError(f"Waveform spectra CSV missing columns {sorted(missing)}: {source_path}")
+    calibration_meta = _calibration_metadata(fieldnames, is_sample=is_sample, source_path=source_path)
+    optional_sql = ", ".join(
+        [
+            _sql_optional(fieldnames, "source", "''", "VARCHAR"),
+            _sql_optional(fieldnames, "unit_status", "'unknown_unverified'", "VARCHAR"),
+            _sql_optional(fieldnames, "physical_unit", "'relative_or_counts'", "VARCHAR"),
+            _sql_optional(fieldnames, "calibration_applied", "FALSE", "BOOLEAN"),
+            _sql_optional(fieldnames, "calib", "1.0", "DOUBLE"),
+            _sql_optional(fieldnames, "scale", "1.0", "DOUBLE"),
+            _sql_optional(fieldnames, "cmpaz_deg", "NULL", "DOUBLE"),
+            _sql_optional(fieldnames, "cmpinc_deg", "NULL", "DOUBLE"),
+            _sql_optional(fieldnames, "station_elevation_m", "NULL", "DOUBLE"),
+            _sql_optional(fieldnames, "station_depth_m", "NULL", "DOUBLE"),
+        ]
+    )
     con = connect(paths)
     literal = _quote_sql_path(source_path)
     try:
@@ -223,8 +283,8 @@ def _estimate_transfer_functions_db(
             "SELECT CAST(event_id AS VARCHAR) AS event_id, "
             "CAST(station_id AS VARCHAR) AS station_id, "
             "CAST(COALESCE(time_utc, '') AS VARCHAR) AS time_utc, "
-            "CAST(COALESCE(lat, 0) AS DOUBLE) AS lat, "
-            "CAST(COALESCE(lon, 0) AS DOUBLE) AS lon, "
+            f"{_sql_optional(fieldnames, 'lat', '0', 'DOUBLE')}, "
+            f"{_sql_optional(fieldnames, 'lon', '0', 'DOUBLE')}, "
             "CAST(frequency_hz AS DOUBLE) AS frequency_hz, "
             "GREATEST(CAST(amplitude AS DOUBLE), 1e-30) AS amplitude, "
             "LN(GREATEST(CAST(amplitude AS DOUBLE), 1e-30)) AS log_amplitude, "
@@ -232,6 +292,7 @@ def _estimate_transfer_functions_db(
             "CAST(group_delay_s AS DOUBLE) AS group_delay_s, "
             "CAST(COALESCE(p_residual_s, 0) AS DOUBLE) AS p_residual_s, "
             "CAST(COALESCE(s_residual_s, 0) AS DOUBLE) AS s_residual_s, "
+            f"{optional_sql}, "
             f"CAST({'TRUE' if is_sample else 'FALSE'} AS BOOLEAN) AS is_sample_data "
             f"FROM read_csv_auto({literal}, header=true, sample_size=-1)"
         )
@@ -340,7 +401,7 @@ def _estimate_transfer_functions_db(
     finally:
         con.close()
     exports: list[tuple[str, str, dict[str, Any]]] = [
-        ("waveform_spectrum", "waveform_spectrum.parquet", {"is_sample_data": is_sample, "source_path": str(source_path), "representation": "complex_spectrum_with_group_delay", "execution": "duckdb_sql"}),
+        ("waveform_spectrum", "waveform_spectrum.parquet", {**calibration_meta, "execution": "duckdb_sql"}),
         ("site_transfer_function", "site_transfer_function.parquet", {"is_sample_data": is_sample, "method": "robust_relative_complex_spectral_ratio_db", "spectrum_rows": source_count}),
         ("transfer_validation", "transfer_validation.parquet", {"is_sample_data": is_sample, "validation": "all_event_correlation_db"}),
         ("structure_anomaly", "structure_anomaly.parquet", {"is_sample_data": is_sample, "uses_phase_and_delay": True}),
@@ -356,6 +417,7 @@ def _estimate_transfer_functions_db(
     finally:
         con.close()
     summary = {
+        **calibration_meta,
         "is_sample_data": is_sample,
         "spectrum_rows": source_count,
         "transfer_rows": int(transfer_rows),
@@ -385,6 +447,8 @@ def estimate_transfer_functions(config: AppConfig, paths: ProjectPaths, sample: 
     if not plan.use_in_memory and database_engine(paths) == "duckdb":
         return _estimate_transfer_functions_db(config, paths, spectra_path, is_sample_path, source_count)
     rows, is_sample, source_path = _prepare_spectra(config, paths, sample=sample)
+    input_fieldnames = set(rows[0]) if rows else set()
+    calibration_meta = _calibration_metadata(input_fieldnames, is_sample=is_sample, source_path=source_path)
     spectra_rows: list[dict[str, Any]] = []
     projector = LocalProjector(config.region)
     for row in rows:
@@ -409,13 +473,22 @@ def estimate_transfer_functions(config: AppConfig, paths: ProjectPaths, sample: 
                 "p_residual_s": float(row.get("p_residual_s", 0.0) or 0.0),
                 "s_residual_s": float(row.get("s_residual_s", 0.0) or 0.0),
                 "source": row.get("source", source_path),
+                "unit_status": row.get("unit_status", "unknown_unverified"),
+                "physical_unit": row.get("physical_unit", "relative_or_counts"),
+                "calibration_applied": str(row.get("calibration_applied", "false")).lower() in {"1", "true", "yes"},
+                "calib": float(row.get("calib", 1.0) or 1.0),
+                "scale": float(row.get("scale", 1.0) or 1.0),
+                "cmpaz_deg": float(row["cmpaz_deg"]) if row.get("cmpaz_deg") not in (None, "") else None,
+                "cmpinc_deg": float(row["cmpinc_deg"]) if row.get("cmpinc_deg") not in (None, "") else None,
+                "station_elevation_m": float(row["station_elevation_m"]) if row.get("station_elevation_m") not in (None, "") else None,
+                "station_depth_m": float(row["station_depth_m"]) if row.get("station_depth_m") not in (None, "") else None,
                 "is_sample_data": is_sample,
             }
         )
     write_table(
         spectra_rows,
         paths.data_processed / "waveform_spectrum.parquet",
-        {"is_sample_data": is_sample, "source_path": source_path, "representation": "complex_spectrum_with_group_delay"},
+        calibration_meta,
     )
     materialize_file(paths, "waveform_spectrum", paths.data_processed / "waveform_spectrum.parquet")
 
@@ -560,6 +633,7 @@ def estimate_transfer_functions(config: AppConfig, paths: ProjectPaths, sample: 
     finally:
         con.close()
     summary = {
+        **calibration_meta,
         "is_sample_data": is_sample,
         "spectrum_rows": len(spectra_rows),
         "transfer_rows": len(tf_rows),

@@ -89,15 +89,21 @@ waveform_array:
   projection_grid_km: 20.0
   projection_radius_km: 80.0
   velocity_km_s: 3.5
+  depth_velocity_min_km_s: 2.8
+  depth_velocity_max_km_s: 4.6
+  depth_velocity_samples: 7
+  projection_refinement_enabled: true
+  projection_refinement_fraction: 0.5
+  projection_refinement_steps: 1
   delay_sigma_s: 0.35
-  top_projections_per_event: 4
-  max_projection_rows: 100000
+  top_projections_per_event: 128
+  max_projection_rows: 250000
   splat_sigma_horizontal_m: 20000.0
   splat_sigma_vertical_m: 12000.0
   resolution_sigma_min_m: 5000.0
   resolution_sigma_max_m: 50000.0
   hinet_source_boost: 1.15
-  max_splats: 100000
+  max_splats: 250000
   use_phase: true
   use_group_delay: true
   output_ply: true

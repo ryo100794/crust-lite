@@ -53,6 +53,17 @@ PROJECTION_COLUMNS = [
     "depth_method",
     "depth_artifact_risk",
     "depth_uncertainty_km",
+    "depth_p05_km",
+    "depth_p50_km",
+    "depth_p95_km",
+    "depth_velocity_min_km_s",
+    "depth_velocity_max_km_s",
+    "depth_velocity_samples",
+    "depth_uncertainty_method",
+    "projection_refinement_dx_m",
+    "projection_refinement_dy_m",
+    "projection_refinement_score_gain",
+    "projection_refinement_method",
     "structural_weight",
     "projection_quality_flag",
     "projection_quality_score",
@@ -85,7 +96,6 @@ PROJECTION_COLUMNS = [
     "projection_method",
     "is_sample_data",
 ]
-
 SPLAT_COLUMNS = [
     "primitive_id",
     "event_id",
@@ -106,6 +116,17 @@ SPLAT_COLUMNS = [
     "depth_method",
     "depth_artifact_risk",
     "depth_uncertainty_km",
+    "depth_p05_km",
+    "depth_p50_km",
+    "depth_p95_km",
+    "depth_velocity_min_km_s",
+    "depth_velocity_max_km_s",
+    "depth_velocity_samples",
+    "depth_uncertainty_method",
+    "projection_refinement_dx_m",
+    "projection_refinement_dy_m",
+    "projection_refinement_score_gain",
+    "projection_refinement_method",
     "structural_weight",
     "projection_quality_flag",
     "projection_quality_score",
@@ -140,7 +161,6 @@ SPLAT_COLUMNS = [
     "interpretation",
     "is_sample_data",
 ]
-
 
 def _parse_time(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC)
@@ -184,6 +204,68 @@ def _candidate_offsets(radius_m: float, grid_m: float) -> list[tuple[float, floa
                 offsets.append((dx, dy))
     offsets.sort(key=lambda item: (math.hypot(item[0], item[1]), item[0], item[1]))
     return offsets or [(0.0, 0.0)]
+
+
+def _velocity_ensemble(config: AppConfig) -> list[float]:
+    """Return a small velocity ensemble centered on the nominal value.
+
+    The projection is still a prototype, but storing quantiles prevents a single
+    homogeneous velocity from creating false depth precision.
+    """
+    n = max(1, int(config.waveform_array.depth_velocity_samples))
+    nominal = float(config.waveform_array.velocity_km_s)
+    v_min = min(float(config.waveform_array.depth_velocity_min_km_s), nominal)
+    v_max = max(float(config.waveform_array.depth_velocity_max_km_s), nominal)
+    if n == 1 or abs(v_max - v_min) < 1.0e-12:
+        return [nominal]
+    if n % 2 == 0:
+        n += 1
+    half = n // 2
+    samples: list[float] = []
+    for i in range(n):
+        t = (i - half) / max(half, 1)
+        if t < 0.0:
+            samples.append(nominal + t * (nominal - v_min))
+        elif t > 0.0:
+            samples.append(nominal + t * (v_max - nominal))
+        else:
+            samples.append(nominal)
+    return sorted(max(1.0e-6, value) for value in samples)
+
+
+def _quantile(values: list[float], q: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return ordered[0]
+    pos = max(0.0, min(1.0, q)) * (len(ordered) - 1)
+    lo = int(math.floor(pos))
+    hi = int(math.ceil(pos))
+    if lo == hi:
+        return ordered[lo]
+    frac = pos - lo
+    return ordered[lo] * (1.0 - frac) + ordered[hi] * frac
+
+
+def _depth_interval_from_uncertainty(depth_km: float, uncertainty_km: float, max_depth_km: float) -> tuple[float, float, float]:
+    unc = max(0.0, float(uncertainty_km))
+    center = max(0.0, min(float(max_depth_km), float(depth_km)))
+    return max(0.0, center - unc), center, min(float(max_depth_km), center + unc)
+
+
+def _late_depth_ensemble(config: AppConfig, event_z_m: float, late_delay_s: float) -> tuple[float, float, float, float, list[float]]:
+    velocities = _velocity_ensemble(config)
+    max_depth_km = float(config.filters.max_depth_km)
+    depths = [
+        _late_projection_depth_m(event_z_m, late_delay_s, velocity, max_depth_km) / 1000.0
+        for velocity in velocities
+    ]
+    p05 = _quantile(depths, 0.05)
+    p50 = _quantile(depths, 0.50)
+    p95 = _quantile(depths, 0.95)
+    uncertainty = max(0.0, 0.5 * (p95 - p05))
+    return p05, p50, p95, uncertainty, velocities
 
 
 def _read_events(paths: ProjectPaths) -> dict[str, dict[str, Any]]:
@@ -405,6 +487,88 @@ def _score_candidate(
     else:
         energy = 0.5
     return clamp01(energy), clamp01(phase_coherence), clamp01(delay_fit), phase_result if math.isfinite(phase_result) else 0.0
+
+
+def _refine_projection_candidate(
+    config: AppConfig,
+    stations: list[dict[str, float]],
+    gx: float,
+    gy: float,
+    frequency_hz: float,
+    velocity_m_s: float,
+) -> tuple[float, float, float, float, float, float, float, float, float, str]:
+    energy, phase_coherence, delay_fit, phase_result = _score_candidate(
+        stations,
+        gx,
+        gy,
+        frequency_hz,
+        velocity_m_s,
+        config.waveform_array.delay_sigma_s,
+        config.waveform_array.use_phase,
+        config.waveform_array.use_group_delay,
+    )
+    if not config.waveform_array.projection_refinement_enabled or config.waveform_array.projection_refinement_steps <= 0:
+        return gx, gy, energy, phase_coherence, delay_fit, phase_result, 0.0, 0.0, 0.0, "coarse_grid_only"
+
+    start_x = gx
+    start_y = gy
+    best_x = gx
+    best_y = gy
+    best = (energy, phase_coherence, delay_fit, phase_result)
+    initial_energy = energy
+    step_m = max(
+        100.0,
+        float(config.waveform_array.projection_grid_km)
+        * 1000.0
+        * float(config.waveform_array.projection_refinement_fraction),
+    )
+    stencil = [
+        (0.0, 0.0),
+        (-1.0, 0.0),
+        (1.0, 0.0),
+        (0.0, -1.0),
+        (0.0, 1.0),
+        (-1.0, -1.0),
+        (-1.0, 1.0),
+        (1.0, -1.0),
+        (1.0, 1.0),
+    ]
+    for _ in range(int(config.waveform_array.projection_refinement_steps)):
+        improved = False
+        for sx, sy in stencil:
+            cx = best_x + sx * step_m
+            cy = best_y + sy * step_m
+            candidate = _score_candidate(
+                stations,
+                cx,
+                cy,
+                frequency_hz,
+                velocity_m_s,
+                config.waveform_array.delay_sigma_s,
+                config.waveform_array.use_phase,
+                config.waveform_array.use_group_delay,
+            )
+            if candidate[0] > best[0] + 1.0e-12:
+                best_x = cx
+                best_y = cy
+                best = candidate
+                improved = True
+        step_m *= 0.5
+        if not improved:
+            continue
+    score_gain = max(0.0, best[0] - initial_energy)
+    return (
+        best_x,
+        best_y,
+        best[0],
+        best[1],
+        best[2],
+        best[3],
+        best_x - start_x,
+        best_y - start_y,
+        score_gain,
+        "local_subgrid_delay_phase_refinement",
+    )
 
 
 def _relative_delay_terms(
@@ -642,24 +806,37 @@ def _project_event_task(task: tuple[AppConfig, str, dict[str, Any], list[tuple[f
         aperture_km = _station_aperture_km(stations)
         splat_sigma_m = _resolution_sigma_m(config, freq, aperture_km)
         frequency_band = f"{freq:g} Hz point spectrum"
-        velocity_model = f"homogeneous_{config.waveform_array.velocity_km_s:g}_km_s"
+        velocities = _velocity_ensemble(config)
+        velocity_model = (
+            f"homogeneous_{config.waveform_array.velocity_km_s:g}_km_s"
+            f"_depth_ensemble_{velocities[0]:g}_{velocities[-1]:g}_km_s_n{len(velocities)}"
+        )
         method = (
             "synthetic_aperture_delay_sum_phase_group_delay_projection"
             if config.waveform_array.synthetic_aperture_enabled
             else "delay_and_sum_phase_group_delay_projection"
         )
         for dx, dy in offsets:
-            gx = event_x + dx
-            gy = event_y + dy
-            energy, phase_coherence, delay_fit, phase_result = _score_candidate(
-                stations,
+            coarse_gx = event_x + dx
+            coarse_gy = event_y + dy
+            (
                 gx,
                 gy,
+                energy,
+                phase_coherence,
+                delay_fit,
+                phase_result,
+                refinement_dx_m,
+                refinement_dy_m,
+                refinement_score_gain,
+                refinement_method,
+            ) = _refine_projection_candidate(
+                config,
+                stations,
+                coarse_gx,
+                coarse_gy,
                 freq,
                 velocity_m_s,
-                config.waveform_array.delay_sigma_s,
-                config.waveform_array.use_phase,
-                config.waveform_array.use_group_delay,
             )
             if config.waveform_array.use_phase and config.waveform_array.use_group_delay:
                 array_coherence = clamp01(phase_coherence * delay_fit)
@@ -672,6 +849,14 @@ def _project_event_task(task: tuple[AppConfig, str, dict[str, Any], list[tuple[f
             beam_power = max(0.0, energy) * math.log1p(len(stations)) * source_weight
             slowness_x, slowness_y = _slowness_vector_s_per_km(
                 event_x, event_y, gx, gy, config.waveform_array.velocity_km_s
+            )
+            direct_uncertainty_km = (
+                float(config.waveform_array.catalog_integer_depth_uncertainty_km)
+                if _integer_km_depth(z_m)
+                else max(2.0, 0.25 * float(config.waveform_array.catalog_integer_depth_uncertainty_km))
+            )
+            direct_p05_km, direct_p50_km, direct_p95_km = _depth_interval_from_uncertainty(
+                depth_km, direct_uncertainty_km, config.filters.max_depth_km
             )
             event_candidates.append(
                 {
@@ -695,9 +880,18 @@ def _project_event_task(task: tuple[AppConfig, str, dict[str, Any], list[tuple[f
                     "depth_source": "catalog_hypocenter",
                     "depth_method": "event_catalog_depth_fixed_to_direct_projection",
                     "depth_artifact_risk": "catalog_depth_quantization_possible",
-                    "depth_uncertainty_km": float(config.waveform_array.catalog_integer_depth_uncertainty_km)
-                    if _integer_km_depth(z_m)
-                    else max(2.0, 0.25 * float(config.waveform_array.catalog_integer_depth_uncertainty_km)),
+                    "depth_uncertainty_km": direct_uncertainty_km,
+                    "depth_p05_km": direct_p05_km,
+                    "depth_p50_km": direct_p50_km,
+                    "depth_p95_km": direct_p95_km,
+                    "depth_velocity_min_km_s": velocities[0],
+                    "depth_velocity_max_km_s": velocities[-1],
+                    "depth_velocity_samples": len(velocities),
+                    "depth_uncertainty_method": "catalog_depth_interval_from_quality_weight",
+                    "projection_refinement_dx_m": refinement_dx_m,
+                    "projection_refinement_dy_m": refinement_dy_m,
+                    "projection_refinement_score_gain": refinement_score_gain,
+                    "projection_refinement_method": refinement_method,
                     "structural_weight": float(config.waveform_array.catalog_integer_depth_weight)
                     if _integer_km_depth(z_m)
                     else float(config.waveform_array.direct_depth_weight),
@@ -756,12 +950,18 @@ def _project_event_task(task: tuple[AppConfig, str, dict[str, Any], list[tuple[f
                     path_family, primitive_type = _late_path_family(
                         late_energy, spread_s, config.waveform_array.delay_sigma_s, positive_fraction
                     )
-                    late_z_m = _late_projection_depth_m(
+                    late_p05_km, late_p50_km, late_p95_km, velocity_uncertainty_km, _velocities = _late_depth_ensemble(
+                        config,
                         z_m,
                         late_delay_s,
-                        config.waveform_array.velocity_km_s,
-                        config.filters.max_depth_km,
                     )
+                    residual_uncertainty_km = max(0.0, spread_s * config.waveform_array.velocity_km_s)
+                    late_depth_uncertainty_km = max(1.0, velocity_uncertainty_km, residual_uncertainty_km)
+                    if late_delay_clipped:
+                        late_depth_uncertainty_km = float(config.filters.max_depth_km)
+                        late_p05_km = 0.0
+                        late_p95_km = float(config.filters.max_depth_km)
+                    late_z_m = late_p50_km * 1000.0
                     excess_path_km = max(0.0, late_delay_s * config.waveform_array.velocity_km_s)
                     late_sigma = max(
                         splat_sigma_m,
@@ -787,11 +987,22 @@ def _project_event_task(task: tuple[AppConfig, str, dict[str, Any], list[tuple[f
                             "late_phase_max_delay_s": late_phase_max_delay_s,
                             "late_delay_clipped": late_delay_clipped,
                             "depth_source": "late_phase_model",
-                            "depth_method": "event_depth_plus_half_extra_path_homogeneous_velocity",
-                            "depth_artifact_risk": "late_delay_window_clipped" if late_delay_clipped else "model_derived_depth",
-                            "depth_uncertainty_km": float(config.filters.max_depth_km)
+                            "depth_method": "event_depth_plus_half_extra_path_velocity_ensemble",
+                            "depth_artifact_risk": "late_delay_window_clipped" if late_delay_clipped else "velocity_ensemble_model_depth",
+                            "depth_uncertainty_km": late_depth_uncertainty_km,
+                            "depth_p05_km": late_p05_km,
+                            "depth_p50_km": late_p50_km,
+                            "depth_p95_km": late_p95_km,
+                            "depth_velocity_min_km_s": velocities[0],
+                            "depth_velocity_max_km_s": velocities[-1],
+                            "depth_velocity_samples": len(velocities),
+                            "depth_uncertainty_method": "delay_window_clipped_full_depth_interval"
                             if late_delay_clipped
-                            else max(1.0, spread_s * config.waveform_array.velocity_km_s),
+                            else "velocity_ensemble_plus_residual_spread",
+                            "projection_refinement_dx_m": refinement_dx_m,
+                            "projection_refinement_dy_m": refinement_dy_m,
+                            "projection_refinement_score_gain": refinement_score_gain,
+                            "projection_refinement_method": refinement_method,
                             "structural_weight": 0.0
                             if late_delay_clipped
                             else float(
@@ -950,6 +1161,24 @@ def build_waveform_array_projection(
             "hinet_source_boost": config.waveform_array.hinet_source_boost,
             "late_phase_max_delay_s": config.waveform_array.late_phase_max_delay_s,
             "array_projection_workers": worker_count,
+            "depth_velocity_min_km_s": config.waveform_array.depth_velocity_min_km_s,
+            "depth_velocity_max_km_s": config.waveform_array.depth_velocity_max_km_s,
+            "depth_velocity_samples": config.waveform_array.depth_velocity_samples,
+            "projection_refinement_enabled": config.waveform_array.projection_refinement_enabled,
+            "projection_refinement_fraction": config.waveform_array.projection_refinement_fraction,
+            "projection_refinement_steps": config.waveform_array.projection_refinement_steps,
+            "primitive_depth_metadata_columns": [
+                "depth_uncertainty_km",
+                "sigma_z_m",
+                "depth_p05_km",
+                "depth_p50_km",
+                "depth_p95_km",
+                "depth_uncertainty_method",
+                "projection_refinement_dx_m",
+                "projection_refinement_dy_m",
+                "projection_refinement_score_gain",
+                "projection_refinement_method",
+            ],
         },
     )
     materialize_file(paths, "waveform_array_projection", projection_path)
@@ -966,6 +1195,20 @@ def build_waveform_array_projection(
             "splat_rows": len(splat_rows),
             "primitive_type_counts": _count_values(splat_rows, "primitive_type"),
             "path_family_counts": _count_values(splat_rows, "path_family"),
+            "splat_role_counts": _count_values(splat_rows, "splat_role"),
+            "depth_uncertainty_policy": "sigma_z_m includes depth_uncertainty_km; p05-p95 and refinement columns remain primitive metadata for GPU diagnostics",
+            "primitive_depth_metadata_columns": [
+                "depth_uncertainty_km",
+                "sigma_z_m",
+                "depth_p05_km",
+                "depth_p50_km",
+                "depth_p95_km",
+                "depth_uncertainty_method",
+                "projection_refinement_dx_m",
+                "projection_refinement_dy_m",
+                "projection_refinement_score_gain",
+                "projection_refinement_method",
+            ],
         },
     )
     materialize_file(paths, "gaussian_splat_primitive", splat_path)
@@ -999,6 +1242,25 @@ def build_waveform_array_projection(
         "resolution_sigma_max_m": config.waveform_array.resolution_sigma_max_m,
         "hinet_source_boost": config.waveform_array.hinet_source_boost,
         "array_projection_workers": worker_count,
+        "depth_velocity_min_km_s": config.waveform_array.depth_velocity_min_km_s,
+        "depth_velocity_max_km_s": config.waveform_array.depth_velocity_max_km_s,
+        "depth_velocity_samples": config.waveform_array.depth_velocity_samples,
+        "projection_refinement_enabled": config.waveform_array.projection_refinement_enabled,
+        "projection_refinement_fraction": config.waveform_array.projection_refinement_fraction,
+        "projection_refinement_steps": config.waveform_array.projection_refinement_steps,
+        "primitive_depth_metadata_columns": [
+            "depth_uncertainty_km",
+            "sigma_z_m",
+            "depth_p05_km",
+            "depth_p50_km",
+            "depth_p95_km",
+            "depth_uncertainty_method",
+            "projection_refinement_dx_m",
+            "projection_refinement_dy_m",
+            "projection_refinement_score_gain",
+            "projection_refinement_method",
+        ],
+        "depth_uncertainty_policy": "depth_p50_km is the projected center; p05-p95 preserves velocity/residual uncertainty; sigma_z_m carries this uncertainty into voxel density",
         "uses_phase": config.waveform_array.use_phase,
         "uses_group_delay": config.waveform_array.use_group_delay,
         "not_prediction": True,
@@ -1048,6 +1310,8 @@ def _build_splats(config: AppConfig, projection_rows: list[dict[str, Any]], is_s
             quality_score = 0.0
         if not is_structure_candidate and not config.waveform_array.retain_diagnostic_splats:
             continue
+        row_uncertainty = float(row.get("depth_uncertainty_km", 0.0) or 0.0)
+        depth_uncertainty_km = max(depth_uncertainty_km, row_uncertainty)
         row["structural_weight"] = structural_weight
         row["depth_uncertainty_km"] = depth_uncertainty_km
         row["projection_quality_flag"] = quality_flag
@@ -1069,6 +1333,21 @@ def _build_splats(config: AppConfig, projection_rows: list[dict[str, Any]], is_s
     for idx, row in enumerate(rows, start=1):
         structural_weight = clamp01(float(row.get("structural_weight", 1.0) or 0.0))
         depth_uncertainty_km = float(row.get("depth_uncertainty_km", 0.0) or 0.0)
+        center_depth_km = float(row.get("depth_p50_km", float(row.get("projection_z_m", row.get("z_m", 0.0)) or 0.0) / 1000.0) or 0.0)
+        fallback_p05_km, fallback_p50_km, fallback_p95_km = _depth_interval_from_uncertainty(
+            center_depth_km,
+            depth_uncertainty_km,
+            config.filters.max_depth_km,
+        )
+        depth_p05_km = float(row.get("depth_p05_km", fallback_p05_km) or fallback_p05_km)
+        depth_p50_km = float(row.get("depth_p50_km", fallback_p50_km) or fallback_p50_km)
+        depth_p95_km = float(row.get("depth_p95_km", fallback_p95_km) or fallback_p95_km)
+        if depth_p05_km > depth_p50_km or depth_p50_km > depth_p95_km:
+            depth_p05_km, depth_p50_km, depth_p95_km = _depth_interval_from_uncertainty(
+                center_depth_km,
+                depth_uncertainty_km,
+                config.filters.max_depth_km,
+            )
         raw_amplitude = clamp01(float(row.get("beam_energy", 0.0) or 0.0))
         structure_amplitude = clamp01(raw_amplitude * structural_weight)
         amplitude = raw_amplitude
@@ -1102,6 +1381,17 @@ def _build_splats(config: AppConfig, projection_rows: list[dict[str, Any]], is_s
                 "depth_method": row.get("depth_method", "event_catalog_depth_fixed_to_direct_projection" if primitive_type == "direct" else "event_depth_plus_half_extra_path_homogeneous_velocity"),
                 "depth_artifact_risk": row.get("depth_artifact_risk", "catalog_depth_quantization_possible" if primitive_type == "direct" else "model_derived_depth"),
                 "depth_uncertainty_km": depth_uncertainty_km,
+                "depth_p05_km": depth_p05_km,
+                "depth_p50_km": depth_p50_km,
+                "depth_p95_km": depth_p95_km,
+                "depth_velocity_min_km_s": row.get("depth_velocity_min_km_s", config.waveform_array.depth_velocity_min_km_s),
+                "depth_velocity_max_km_s": row.get("depth_velocity_max_km_s", config.waveform_array.depth_velocity_max_km_s),
+                "depth_velocity_samples": row.get("depth_velocity_samples", config.waveform_array.depth_velocity_samples),
+                "depth_uncertainty_method": row.get("depth_uncertainty_method", "legacy_interval_from_depth_uncertainty"),
+                "projection_refinement_dx_m": row.get("projection_refinement_dx_m", 0.0),
+                "projection_refinement_dy_m": row.get("projection_refinement_dy_m", 0.0),
+                "projection_refinement_score_gain": row.get("projection_refinement_score_gain", 0.0),
+                "projection_refinement_method": row.get("projection_refinement_method", "coarse_grid_only"),
                 "structural_weight": structural_weight,
                 "projection_quality_flag": row.get("projection_quality_flag", "unknown"),
                 "projection_quality_score": row.get("projection_quality_score", structural_weight),

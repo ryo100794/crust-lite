@@ -7,13 +7,23 @@ from typing import Any
 from crust_lite.config import AppConfig
 from crust_lite.geo import LocalProjector
 from crust_lite.paths import ProjectPaths
-from crust_lite.viz.japan_outline import local_context_outlines
-from crust_lite.viz.tectonics import japan_tectonic_context
+from crust_lite.viz.japan_outline import JapanOutline, local_context_outlines
+from crust_lite.viz.tectonics import TectonicLine, japan_tectonic_context
 
 
 def _count_values(rows: list[dict[str, Any]], key: str) -> dict[str, int]:
     counts: dict[str, int] = {}
     for row in rows:
+        value = str(row.get(key, "unknown"))
+        counts[value] = counts.get(value, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def _count_existing_values(rows: list[dict[str, Any]], key: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        if key not in row:
+            continue
         value = str(row.get(key, "unknown"))
         counts[value] = counts.get(value, 0) + 1
     return dict(sorted(counts.items()))
@@ -70,6 +80,111 @@ def _top_depth_bins(rows: list[dict[str, Any]], key: str, bin_km: float, limit: 
     ]
 
 
+def _finite_float(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except Exception:
+        return None
+    if not math.isfinite(number):
+        return None
+    return number
+
+
+def _depth_center_m(row: dict[str, Any]) -> float:
+    p50_km = _finite_float(row.get("depth_p50_km"))
+    if p50_km is not None:
+        return p50_km * 1000.0
+    return float(row.get("z_m", 0.0) or 0.0)
+
+
+def _summary(values: list[float], digits: int = 6) -> dict[str, Any]:
+    finite = sorted(value for value in values if math.isfinite(value))
+    if not finite:
+        return {"count": 0}
+    n = len(finite)
+
+    def quantile(q: float) -> float:
+        if n == 1:
+            return finite[0]
+        pos = (n - 1) * q
+        lo = int(math.floor(pos))
+        hi = int(math.ceil(pos))
+        if lo == hi:
+            return finite[lo]
+        return finite[lo] * (hi - pos) + finite[hi] * (pos - lo)
+
+    return {
+        "count": n,
+        "min": round(finite[0], digits),
+        "p05": round(quantile(0.05), digits),
+        "p50": round(quantile(0.50), digits),
+        "mean": round(sum(finite) / n, digits),
+        "p95": round(quantile(0.95), digits),
+        "max": round(finite[-1], digits),
+    }
+
+
+def _depth_uncertainty_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    percentile_rows = 0
+    complete_percentile_rows = 0
+    interval_widths: list[float] = []
+    p05_values: list[float] = []
+    p50_values: list[float] = []
+    p95_values: list[float] = []
+    velocity_spans: list[float] = []
+    velocity_samples: list[float] = []
+    refinement_offsets: list[float] = []
+    refinement_score_gains: list[float] = []
+    for row in rows:
+        p05 = _finite_float(row.get("depth_p05_km"))
+        p50 = _finite_float(row.get("depth_p50_km"))
+        p95 = _finite_float(row.get("depth_p95_km"))
+        if p05 is not None or p50 is not None or p95 is not None:
+            percentile_rows += 1
+        if p05 is not None:
+            p05_values.append(p05)
+        if p50 is not None:
+            p50_values.append(p50)
+        if p95 is not None:
+            p95_values.append(p95)
+        if p05 is not None and p50 is not None and p95 is not None:
+            complete_percentile_rows += 1
+            interval_widths.append(max(0.0, p95 - p05))
+
+        velocity_min = _finite_float(row.get("depth_velocity_min_km_s"))
+        velocity_max = _finite_float(row.get("depth_velocity_max_km_s"))
+        if velocity_min is not None and velocity_max is not None:
+            velocity_spans.append(max(0.0, velocity_max - velocity_min))
+        samples = _finite_float(row.get("depth_velocity_samples"))
+        if samples is not None:
+            velocity_samples.append(samples)
+
+        dx_m = _finite_float(row.get("projection_refinement_dx_m"))
+        dy_m = _finite_float(row.get("projection_refinement_dy_m"))
+        if dx_m is not None and dy_m is not None:
+            refinement_offsets.append(math.hypot(dx_m, dy_m))
+        score_gain = _finite_float(row.get("projection_refinement_score_gain"))
+        if score_gain is not None:
+            refinement_score_gains.append(score_gain)
+
+    return {
+        "available": percentile_rows > 0,
+        "rows_with_any_depth_percentile": percentile_rows,
+        "rows_with_complete_p05_p50_p95": complete_percentile_rows,
+        "depth_p05_km": _summary(p05_values),
+        "depth_p50_km": _summary(p50_values),
+        "depth_p95_km": _summary(p95_values),
+        "p05_p95_width_km": _summary(interval_widths),
+        "depth_velocity_span_km_s": _summary(velocity_spans),
+        "depth_velocity_samples": _summary(velocity_samples, digits=3),
+        "depth_uncertainty_method_counts": _count_existing_values(rows, "depth_uncertainty_method"),
+        "projection_refinement_offset_m": _summary(refinement_offsets, digits=3),
+        "projection_refinement_score_gain": _summary(refinement_score_gains),
+        "projection_refinement_method_counts": _count_existing_values(rows, "projection_refinement_method"),
+        "display_semantics": "WebGL z is the depth center: depth_p50_km when available, otherwise legacy z_m. The p05-p95 interval remains metadata for uncertainty interpretation rather than a visual post-processing filter.",
+    }
+
+
 def _depth_diagnostics(config: AppConfig, rows: list[dict[str, Any]]) -> dict[str, Any]:
     max_delay_s = float(config.waveform_array.late_phase_max_delay_s)
     flag_counts = {"continuous_or_unflagged": 0, "catalog_integer_km_direct": 0, "late_delay_window_clipped": 0, "late_model_derived": 0}
@@ -98,7 +213,7 @@ def _depth_diagnostics(config: AppConfig, rows: list[dict[str, Any]]) -> dict[st
                 clipped_count += 1
 
     return {
-        "depth_coordinate_note": "WebGL z is plotted from catalog hypocenter depth for direct splats and model-derived late-delay projection depth for late splats; waveform data do not directly observe z_m.",
+        "depth_coordinate_note": "WebGL z is plotted as the depth center (depth_p50_km when present, otherwise legacy z_m). Depth is not directly observed by the waveform array; p05-p95 metadata represents computational uncertainty.",
         "late_phase_max_delay_s": max_delay_s,
         "source_depth_integer_km_fraction": round(source_integer / source_count, 6) if source_count else 0.0,
         "late_delay_clipped_count": clipped_count,
@@ -106,7 +221,8 @@ def _depth_diagnostics(config: AppConfig, rows: list[dict[str, Any]]) -> dict[st
         "depth_flag_counts": flag_counts,
         "top_splat_depth_bins_1km": _top_depth_bins(rows, "z_m", 1.0),
         "top_source_depth_bins_1km": _top_depth_bins(rows, "source_event_z_m", 1.0),
-        "interpretation": "Layer-like bands may be dominated by catalog depth quantization and late-delay search-window clipping; treat them as diagnostics until validated against independent velocity/plate models.",
+        "uncertainty": _depth_uncertainty_summary(rows),
+        "interpretation": "Layer-like bands should be read through the computational depth uncertainty model, not as display smoothing artifacts. Catalog-depth quantization, late-delay window clipping, velocity-range sampling, and projection refinement are retained as diagnostic metadata so apparent layers can be checked against the p05-p95 interval and independent velocity/plate constraints.",
     }
 
 
@@ -181,7 +297,7 @@ def _terrain_payload(config: AppConfig, is_sample: bool) -> dict[str, Any]:
         prefer_high_resolution=True,
     )
     samples_per_segment = 12 if is_sample else 200
-    dense_outlines = []
+    dense_outlines: list[JapanOutline] = []
     for outline in outlines:
         source = str(outline.get("source", "offline_coarse_context"))
         if source == "natural_earth_10m_admin_0_japan":
@@ -197,12 +313,12 @@ def _terrain_payload(config: AppConfig, is_sample: bool) -> dict[str, Any]:
             }
         )
     outline_payload = []
-    for outline in dense_outlines:
+    for dense_outline in dense_outlines:
         flat: list[float] = []
-        for lon, lat in outline["coordinates"]:
+        for lon, lat in dense_outline["coordinates"]:
             x_m, y_m = projector.lonlat_to_xy(lon, lat)
             flat.extend([_round(x_m), _round(y_m), 0.0])
-        outline_payload.append({"name": outline["name"], "source": outline["source"], "positions": flat})
+        outline_payload.append({"name": dense_outline["name"], "source": dense_outline["source"], "positions": flat})
     outline_sources = sorted({str(outline["source"]) for outline in dense_outlines})
     high_resolution = "natural_earth_10m_admin_0_japan" in outline_sources
     return {
@@ -231,7 +347,7 @@ def _tectonics_payload(config: AppConfig) -> dict[str, Any]:
     vertical = config.visualization_3d.vertical_exaggeration
     context = japan_tectonic_context()
 
-    def project_line(line: dict[str, Any]) -> dict[str, Any]:
+    def project_line(line: TectonicLine) -> dict[str, Any]:
         flat: list[float] = []
         for lon, lat, depth_km in line["coordinates"]:
             x_m, y_m = projector.lonlat_to_xy(float(lon), float(lat))
@@ -266,6 +382,13 @@ def _splat_payload(config: AppConfig, rows: list[dict[str, Any]]) -> dict[str, A
     types: list[float] = []
     depth_flags: list[float] = []
     amplitudes: list[float] = []
+    depth_centers_km: list[float] = []
+    depth_p05_km: list[float | None] = []
+    depth_p50_km: list[float | None] = []
+    depth_p95_km: list[float | None] = []
+    depth_velocity_samples: list[float | None] = []
+    projection_refinement_offsets_m: list[float | None] = []
+    projection_refinement_score_gains: list[float | None] = []
     line_positions: list[float] = []
     vertical = config.visualization_3d.vertical_exaggeration
     max_delay_s = float(config.waveform_array.late_phase_max_delay_s)
@@ -282,7 +405,8 @@ def _splat_payload(config: AppConfig, rows: list[dict[str, Any]]) -> dict[str, A
     for row in rows:
         x_m = float(row.get("x_m", 0.0) or 0.0)
         y_m = float(row.get("y_m", 0.0) or 0.0)
-        z_plot = -1.0 * float(row.get("z_m", 0.0) or 0.0) * vertical
+        depth_center_m = _depth_center_m(row)
+        z_plot = -1.0 * depth_center_m * vertical
         positions.extend([_round(x_m), _round(y_m), _round(z_plot)])
         amplitude = float(row.get("amplitude", 0.0) or 0.0)
         relative_intensity = max(0.0, min(1.0, (amplitude - min_amplitude) / amplitude_span))
@@ -296,6 +420,20 @@ def _splat_payload(config: AppConfig, rows: list[dict[str, Any]]) -> dict[str, A
         types.append(float(_type_code(primitive_type)))
         depth_flags.append(float(_depth_flag_code(row, max_delay_s)))
         amplitudes.append(_round(float(row.get("amplitude", 0.0) or 0.0), 5))
+        depth_centers_km.append(_round(depth_center_m / 1000.0, 6))
+        p05 = _finite_float(row.get("depth_p05_km"))
+        p50 = _finite_float(row.get("depth_p50_km"))
+        p95 = _finite_float(row.get("depth_p95_km"))
+        depth_p05_km.append(round(p05, 6) if p05 is not None else None)
+        depth_p50_km.append(round(p50, 6) if p50 is not None else None)
+        depth_p95_km.append(round(p95, 6) if p95 is not None else None)
+        samples = _finite_float(row.get("depth_velocity_samples"))
+        depth_velocity_samples.append(round(samples, 3) if samples is not None else None)
+        dx_m = _finite_float(row.get("projection_refinement_dx_m"))
+        dy_m = _finite_float(row.get("projection_refinement_dy_m"))
+        projection_refinement_offsets_m.append(round(math.hypot(dx_m, dy_m), 3) if dx_m is not None and dy_m is not None else None)
+        score_gain = _finite_float(row.get("projection_refinement_score_gain"))
+        projection_refinement_score_gains.append(round(score_gain, 6) if score_gain is not None else None)
         if id(row) in line_ids:
             sx = float(row.get("source_event_x_m", x_m) or x_m)
             sy = float(row.get("source_event_y_m", y_m) or y_m)
@@ -309,6 +447,13 @@ def _splat_payload(config: AppConfig, rows: list[dict[str, Any]]) -> dict[str, A
         "types": types,
         "depth_flags": depth_flags,
         "amplitudes": amplitudes,
+        "depth_centers_km": depth_centers_km,
+        "depth_p05_km": depth_p05_km,
+        "depth_p50_km": depth_p50_km,
+        "depth_p95_km": depth_p95_km,
+        "depth_velocity_samples": depth_velocity_samples,
+        "projection_refinement_offsets_m": projection_refinement_offsets_m,
+        "projection_refinement_score_gains": projection_refinement_score_gains,
         "source_lines": line_positions,
         "line_segments": len(line_positions) // 6,
     }
@@ -377,6 +522,7 @@ def _webgl_html(payload: dict[str, Any]) -> str:
     <label><input type="checkbox" data-depth-flag="3" checked>late model depth</label>
   </div>
   <div>depth diagnostics: amber=catalog-rounded direct, red=delay-window clipped, cyan=late model-derived.</div>
+  <div>depth uncertainty: z uses median/center depth; p05-p95 intervals are carried in metadata, not drawn as fixed layers.</div>
   <div>
     <label><input type="checkbox" data-type="0" checked>direct</label>
     <label><input type="checkbox" data-type="1" checked>reflected</label>
@@ -385,12 +531,12 @@ def _webgl_html(payload: dict[str, Any]) -> str:
   </div>
   <div>
     <label><input id="outlineToggle" type="checkbox" checked>Japan outline</label>
-    <label><input id="plateBoundaryToggle" type="checkbox" checked>plate boundaries</label>
-    <label><input id="plateInterfaceToggle" type="checkbox" checked>plate interfaces</label>
+    <label><input id="plateBoundaryToggle" type="checkbox">schematic plate boundaries</label>
+    <label><input id="plateInterfaceToggle" type="checkbox">schematic slab wireframes</label>
     <label><input id="lineToggle" type="checkbox">source-projection guides</label>
   </div>
-  <div>plate overlay: schematic trench/trough traces and slab-interface wireframes for visual context only</div>
-  <div>z note: waveform data do not directly observe depth; direct z uses catalog depth, late z is model-derived.</div>
+  <div>plate overlay: schematic only, not literature-calibrated and not for analytical comparison</div>
+  <div>z note: waveform data do not directly observe depth; direct/late z is an uncertainty-aware computational center.</div>
   <div>
     splat scale <input id="scaleSlider" type="range" min="0.25" max="8" step="0.05" value="1.45">
     opacity <input id="opacitySlider" type="range" min="0.15" max="2.5" step="0.05" value="1.0">
@@ -403,8 +549,9 @@ const payload = JSON.parse(document.getElementById('payload').textContent);
 const canvas = document.getElementById('gl');
 const gl = canvas.getContext('webgl2', {{antialias: true, alpha: false}});
 if (!gl) throw new Error('WebGL2 is required');
+const depthUncertainty = payload.metadata.depth_diagnostics.uncertainty || {{rows_with_complete_p05_p50_p95: 0}};
 document.getElementById('stats').textContent =
-  `splats=${{payload.metadata.displayed_splats}} / clipped late in rendered splats=${{payload.metadata.depth_diagnostics.late_delay_clipped_count}} / outline vertices=${{payload.terrain.outline_vertices}}`;
+  `splats=${{payload.metadata.displayed_splats}} / depth p05-p95 rows=${{depthUncertainty.rows_with_complete_p05_p50_p95}} / clipped late=${{payload.metadata.depth_diagnostics.late_delay_clipped_count}} / outline vertices=${{payload.terrain.outline_vertices}}`;
 
 function shader(type, src) {{
   const s = gl.createShader(type);
@@ -547,7 +694,7 @@ function lookAt(eye, target, up) {{
   return o;
 }}
 let yaw=0.72, pitch=0.46, dist=3.2, pan=[0,0,0];
-let visible=[1,1,1,1], depthVisible=[1,1,1,1], showTerrain=false, showOutlines=true, showPlateBoundaries=true, showPlateInterfaces=true, showLines=false, splatScale=1.45, opacityScale=1.0, colorMode=0;
+let visible=[1,1,1,1], depthVisible=[1,1,1,1], showTerrain=false, showOutlines=true, showPlateBoundaries=false, showPlateInterfaces=false, showLines=false, splatScale=1.45, opacityScale=1.0, colorMode=0;
 const pointers = new Map();
 let lastCentroid = null, lastPinchDistance = 0, lastPointer = null, panning = false;
 function mvp() {{
@@ -690,7 +837,8 @@ def write_webgl_splat_preview(config: AppConfig, paths: ProjectPaths, rows: list
         "splat_color_note": "Default grayscale encodes relative amplitude. Path-type colors and depth diagnostics are optional overlays, not intensity.",
         "depth_quality_handling": {
             "display_filtering_default": "none",
-            "computation_policy": "All splat candidates are retained by default. Direct-wave catalog-depth anchors and clipped late-delay candidates are marked as diagnostics with structure_amplitude=0 unless explicitly enabled; downstream structure density uses structure_amplitude, not display amplitude.",
+            "z_display_policy": "The plotted z coordinate is the computational depth center: depth_p50_km when available, otherwise legacy z_m. The p05-p95 interval is preserved in metadata and is not flattened into display-only layer styling.",
+            "computation_policy": "All splat candidates are retained by default. Direct-wave catalog-depth anchors, clipped late-delay candidates, velocity-sampling ranges, and projection-refinement offsets are represented as computational uncertainty/diagnostic metadata; downstream structure density should use structure_amplitude and uncertainty fields, not display amplitude or visual layer appearance.",
         },
         "depth_diagnostics": depth_diagnostics,
         "is_sample_data": is_sample,
@@ -700,6 +848,8 @@ def write_webgl_splat_preview(config: AppConfig, paths: ProjectPaths, rows: list
         "uses_group_delay": config.waveform_array.use_group_delay,
         "primitive_type_counts": _count_values(rows, "primitive_type"),
         "path_family_counts": _count_values(rows, "path_family"),
+        "splat_role_counts": _count_existing_values(rows, "splat_role"),
+        "displayed_splat_role_counts": _count_existing_values(limit_rows, "splat_role"),
         "terrain_overlay": "disabled_surface_outline_only",
         "terrain_grid": {"nx": terrain["nx"], "ny": terrain["ny"]},
         "canvas_device_pixel_ratio_max": 4,
@@ -714,7 +864,9 @@ def write_webgl_splat_preview(config: AppConfig, paths: ProjectPaths, rows: list
         "tectonic_overlay_note": tectonics["note"],
         "tectonic_boundary_count": len(tectonics["boundaries"]),
         "tectonic_interface_line_count": len(tectonics["interfaces"]),
-        "tectonic_overlay_default_visible": True,
+        "tectonic_overlay_default_visible": False,
+        "tectonic_overlay_literature_based": False,
+        "tectonic_overlay_warning": "Schematic hand-built context only. It is not calibrated to Slab2, GSI, JMA, JAMSTEC, or other published plate-interface datasets and should not be used for analytical comparison.",
         "sample_lightweight_rendering": is_sample,
         "rendering": "WebGL2 high-density point-sprite Gaussian splats with outline-only Japan context; not Plotly mesh ellipsoids",
         "not_prediction": True,

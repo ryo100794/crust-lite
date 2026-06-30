@@ -13,6 +13,38 @@ from crust_lite.config import load_config
 from crust_lite.io.parquet import read_sidecar, read_table
 from crust_lite.paths import ProjectPaths
 
+DEPTH_UNCERTAINTY_COLUMNS = {
+    "depth_p05_km",
+    "depth_p50_km",
+    "depth_p95_km",
+    "depth_velocity_min_km_s",
+    "depth_velocity_max_km_s",
+    "depth_velocity_samples",
+    "depth_uncertainty_method",
+}
+
+PROJECTION_REFINEMENT_COLUMNS = {
+    "projection_refinement_dx_m",
+    "projection_refinement_dy_m",
+    "projection_refinement_score_gain",
+    "projection_refinement_method",
+}
+
+ARRAY_PROJECTION_DERIVED_COLUMNS = DEPTH_UNCERTAINTY_COLUMNS | PROJECTION_REFINEMENT_COLUMNS
+
+
+def _assert_has_columns(row: dict[str, object], columns: set[str]) -> None:
+    missing = columns - set(row)
+    assert not missing, f"missing columns: {sorted(missing)}"
+
+
+def _assert_depth_uncertainty_row(row: dict[str, object]) -> None:
+    assert float(row["depth_p05_km"]) <= float(row["depth_p50_km"]) <= float(row["depth_p95_km"])
+    assert float(row["depth_velocity_min_km_s"]) <= float(row["depth_velocity_max_km_s"])
+    assert int(row["depth_velocity_samples"]) > 0
+    assert row["depth_uncertainty_method"]
+    assert row["projection_refinement_method"]
+
 
 def _sample_project(tmp_path: Path) -> Path:
     repo_root = Path(__file__).resolve().parents[1]
@@ -51,11 +83,13 @@ def test_sample_waveform_array_projection_outputs(tmp_path: Path) -> None:
         "projection_x_m",
         "projection_y_m",
         "projection_z_m",
+        "z_m",
         "primitive_type",
         "path_family",
         "late_phase_delay_s",
         "excess_path_km",
     }.issubset(projection[0])
+    _assert_has_columns(projection[0], ARRAY_PROJECTION_DERIVED_COLUMNS)
     assert {
         "sigma_x_m",
         "sigma_y_m",
@@ -72,7 +106,15 @@ def test_sample_waveform_array_projection_outputs(tmp_path: Path) -> None:
         "source_event_x_m",
         "source_event_y_m",
         "source_event_z_m",
+        "z_m",
     }.issubset(splats[0])
+    _assert_has_columns(splats[0], ARRAY_PROJECTION_DERIVED_COLUMNS)
+
+    for row in projection:
+        _assert_depth_uncertainty_row(row)
+
+    for row in splats:
+        _assert_depth_uncertainty_row(row)
     assert paths.outputs_3d.joinpath("gaussian_splat_primitives.ply").exists()
     html = paths.outputs_3d.joinpath("array_projection_splats.html")
     assert html.exists()
