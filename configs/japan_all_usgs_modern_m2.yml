@@ -37,8 +37,8 @@ data_sources:
   use_gnss: false
   use_active_faults: false
   use_waveforms: true
-  waveform_spectra_csv: data/raw/waveforms/combined/japan_all_2000_2026_m55_spectra.csv
-  waveform_feature_csv: data/raw/waveforms/combined/japan_all_2000_2026_m55_waveform_features.csv
+  waveform_spectra_csv: data/raw/waveforms/combined/japan_all_2000_2026_m50_spectra.csv
+  waveform_feature_csv: data/raw/waveforms/combined/japan_all_2000_2026_m50_waveform_features.csv
 
 preprocessing:
   compact_enabled: true
