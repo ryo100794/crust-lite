@@ -85,19 +85,38 @@ def _terrain_payload(config: AppConfig, is_sample: bool) -> dict[str, Any]:
     projected into the configured local CRS at z=0.
     """
     projector = LocalProjector(config.region)
-    outlines = local_context_outlines(config.region.bbox, margin_deg=3.0)
-    samples_per_segment = 12 if is_sample else 160
-    dense_outlines = [
-        {"name": outline["name"], "coordinates": _densify_outline(outline["coordinates"], samples_per_segment=samples_per_segment)}
-        for outline in outlines
-    ]
+    target_segment_km = 5.0 if is_sample else 1.0
+    outlines = local_context_outlines(
+        config.region.bbox,
+        margin_deg=3.0,
+        target_segment_km=target_segment_km,
+        prefer_high_resolution=True,
+    )
+    samples_per_segment = 12 if is_sample else 200
+    dense_outlines = []
+    for outline in outlines:
+        source = str(outline.get("source", "offline_coarse_context"))
+        if source == "natural_earth_10m_admin_0_japan":
+            coordinates = outline["coordinates"]
+        else:
+            coordinates = _densify_outline(outline["coordinates"], samples_per_segment=samples_per_segment)
+        dense_outlines.append(
+            {
+                "name": outline["name"],
+                "coordinates": coordinates,
+                "source": source,
+                "target_segment_km": outline.get("target_segment_km", target_segment_km),
+            }
+        )
     outline_payload = []
     for outline in dense_outlines:
         flat: list[float] = []
         for lon, lat in outline["coordinates"]:
             x_m, y_m = projector.lonlat_to_xy(lon, lat)
             flat.extend([_round(x_m), _round(y_m), 0.0])
-        outline_payload.append({"name": outline["name"], "positions": flat})
+        outline_payload.append({"name": outline["name"], "source": outline["source"], "positions": flat})
+    outline_sources = sorted({str(outline["source"]) for outline in dense_outlines})
+    high_resolution = "natural_earth_10m_admin_0_japan" in outline_sources
     return {
         "nx": 0,
         "ny": 0,
@@ -106,6 +125,15 @@ def _terrain_payload(config: AppConfig, is_sample: bool) -> dict[str, Any]:
         "indices": [],
         "outlines": outline_payload,
         "outline_vertices": sum(len(outline["positions"]) // 3 for outline in outline_payload),
+        "outline_sources": outline_sources,
+        "outline_target_segment_km": target_segment_km,
+        "outline_resolution": (
+            "natural_earth_10m_admin_0_japan_densified_to_1km"
+            if high_resolution and not is_sample
+            else "natural_earth_10m_admin_0_japan_densified_to_5km"
+            if high_resolution
+            else "catmull_rom_densified_offline_outline_fallback"
+        ),
         "surface_enabled": False,
     }
 
@@ -487,7 +515,9 @@ def write_webgl_splat_preview(config: AppConfig, paths: ProjectPaths, rows: list
         "point_sprite_max_px": 384,
         "touch_controls": "pointer_events_one_finger_rotate_two_finger_pan_pinch_zoom",
         "japan_outline_vertices": terrain["outline_vertices"],
-        "japan_outline_resolution": "catmull_rom_densified_offline_outline_only_160_samples_per_segment",
+        "japan_outline_sources": terrain["outline_sources"],
+        "japan_outline_target_segment_km": terrain["outline_target_segment_km"],
+        "japan_outline_resolution": terrain["outline_resolution"],
         "surface_rendering": "disabled_to_avoid_hiding_subsurface_splats",
         "sample_lightweight_rendering": is_sample,
         "rendering": "WebGL2 high-density point-sprite Gaussian splats with outline-only Japan context; not Plotly mesh ellipsoids",

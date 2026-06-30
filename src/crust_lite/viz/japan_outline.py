@@ -1,11 +1,19 @@
 from __future__ import annotations
 
-from typing import TypedDict
+import logging
+import math
+from functools import lru_cache
+from typing import Any, NotRequired, TypedDict
+
+LOGGER = logging.getLogger(__name__)
+EARTH_RADIUS_KM = 6371.0088
 
 
 class JapanOutline(TypedDict):
     name: str
     coordinates: list[tuple[float, float]]
+    source: NotRequired[str]
+    target_segment_km: NotRequired[float]
 
 
 # Simplified offline outlines for cartographic context only. These coordinates are
@@ -137,19 +145,124 @@ JAPAN_ARCHIPELAGO_OUTLINES: list[JapanOutline] = [
 ]
 
 
+def _haversine_km(start: tuple[float, float], end: tuple[float, float]) -> float:
+    lon1, lat1 = start
+    lon2, lat2 = end
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    d_phi = math.radians(lat2 - lat1)
+    d_lambda = math.radians(lon2 - lon1)
+    a = math.sin(d_phi / 2.0) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(d_lambda / 2.0) ** 2
+    return 2.0 * EARTH_RADIUS_KM * math.atan2(math.sqrt(a), math.sqrt(max(0.0, 1.0 - a)))
+
+
+def _densify_lonlat(coords: list[tuple[float, float]], max_segment_km: float) -> list[tuple[float, float]]:
+    if len(coords) < 2:
+        return coords
+    max_segment_km = max(0.1, max_segment_km)
+    dense: list[tuple[float, float]] = [coords[0]]
+    for start, end in zip(coords, coords[1:], strict=False):
+        distance_km = _haversine_km(start, end)
+        steps = max(1, int(math.ceil(distance_km / max_segment_km)))
+        lon1, lat1 = start
+        lon2, lat2 = end
+        for step in range(1, steps + 1):
+            fraction = step / steps
+            dense.append((lon1 + (lon2 - lon1) * fraction, lat1 + (lat2 - lat1) * fraction))
+    return dense
+
+
+def _geometry_polygons(geometry: Any) -> list[Any]:
+    geom_type = getattr(geometry, "geom_type", "")
+    if geom_type == "Polygon":
+        return [geometry]
+    if geom_type == "MultiPolygon":
+        return list(getattr(geometry, "geoms", []))
+    return []
+
+
+@lru_cache(maxsize=8)
+def _natural_earth_japan_outlines(max_segment_km: float) -> tuple[JapanOutline, ...]:
+    """Load Japan coast outlines from Natural Earth 10m and densify visually.
+
+    Natural Earth 10m is cartographic data, not an analytical 1 km coastline.
+    The densification below makes adjacent rendered vertices roughly 1 km apart
+    so the WebGL context no longer looks faceted when zoomed.
+    """
+    try:
+        import cartopy.io.shapereader as shpreader
+    except Exception as exc:  # pragma: no cover - optional dependency fallback
+        LOGGER.warning("Cannot load Natural Earth coastline because cartopy is unavailable: %s", exc)
+        return ()
+    try:
+        path = shpreader.natural_earth(resolution="10m", category="cultural", name="admin_0_countries")
+        reader = shpreader.Reader(path)
+        outlines: list[JapanOutline] = []
+        for record in reader.records():
+            attrs = record.attributes
+            if not (
+                attrs.get("ADMIN") == "Japan"
+                or attrs.get("NAME") == "Japan"
+                or attrs.get("SOVEREIGNT") == "Japan"
+            ):
+                continue
+            for index, polygon in enumerate(_geometry_polygons(record.geometry)):
+                coords = [(float(lon), float(lat)) for lon, lat in polygon.exterior.coords]
+                if len(coords) < 4:
+                    continue
+                outlines.append(
+                    {
+                        "name": f"Japan_NE10m_{index:03d}",
+                        "coordinates": _densify_lonlat(coords, max_segment_km=max_segment_km),
+                        "source": "natural_earth_10m_admin_0_japan",
+                        "target_segment_km": max_segment_km,
+                    }
+                )
+        if outlines:
+            return tuple(outlines)
+    except Exception as exc:  # pragma: no cover - network/cache dependent fallback
+        LOGGER.warning("Cannot load Natural Earth Japan coastline; using offline coarse fallback: %s", exc)
+    return ()
+
+
+def _outline_bounds(outline: JapanOutline) -> tuple[float, float, float, float]:
+    coords = outline["coordinates"]
+    lons = [coord[0] for coord in coords]
+    lats = [coord[1] for coord in coords]
+    return min(lons), min(lats), max(lons), max(lats)
+
+
 def outline_intersects_bbox(outline: JapanOutline, bbox: tuple[float, float, float, float], margin_deg: float) -> bool:
     min_lon, min_lat, max_lon, max_lat = bbox
     min_lon -= margin_deg
     min_lat -= margin_deg
     max_lon += margin_deg
     max_lat += margin_deg
-    return any(min_lon <= lon <= max_lon and min_lat <= lat <= max_lat for lon, lat in outline["coordinates"])
+    outline_min_lon, outline_min_lat, outline_max_lon, outline_max_lat = _outline_bounds(outline)
+    return not (
+        outline_max_lon < min_lon
+        or outline_min_lon > max_lon
+        or outline_max_lat < min_lat
+        or outline_min_lat > max_lat
+    )
 
 
-def local_context_outlines(bbox: tuple[float, float, float, float], margin_deg: float = 2.5) -> list[JapanOutline]:
+def local_context_outlines(
+    bbox: tuple[float, float, float, float],
+    margin_deg: float = 2.5,
+    target_segment_km: float = 1.0,
+    prefer_high_resolution: bool = True,
+) -> list[JapanOutline]:
+    source_outlines = (
+        list(_natural_earth_japan_outlines(round(target_segment_km, 3)))
+        if prefer_high_resolution
+        else []
+    )
+    if not source_outlines:
+        source_outlines = JAPAN_ARCHIPELAGO_OUTLINES
     selected = [
         outline
-        for outline in JAPAN_ARCHIPELAGO_OUTLINES
+        for outline in source_outlines
         if outline_intersects_bbox(outline, bbox, margin_deg=margin_deg)
     ]
-    return selected or JAPAN_ARCHIPELAGO_OUTLINES
+    return selected or source_outlines
