@@ -97,9 +97,11 @@ def _calibration_metadata(fieldnames: set[str], *, is_sample: bool, source_path:
 
 
 def _sql_optional(fieldnames: set[str], column: str, default: str, cast_type: str) -> str:
-    if column in fieldnames:
-        return f"CAST(COALESCE({column}, {default}) AS {cast_type}) AS {column}"
-    return f"CAST({default} AS {cast_type}) AS {column}"
+    if column not in fieldnames:
+        return f"CAST({default} AS {cast_type}) AS {column}"
+    if cast_type.upper() == "VARCHAR":
+        return f"COALESCE(CAST({column} AS VARCHAR), {default}) AS {column}"
+    return f"COALESCE(TRY_CAST({column} AS {cast_type}), CAST({default} AS {cast_type})) AS {column}"
 
 
 def _count_csv_rows(path: Path) -> int:
