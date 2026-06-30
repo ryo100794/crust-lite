@@ -87,6 +87,7 @@ def _events_payload(events: list[dict[str, Any]], cfg: AppConfig, display_mode: 
             "depths_km": [],
             "ids": [],
             "frame_labels": ["no_events"],
+            "frame_indices": [0],
             "frame_days": frame_days,
             "mode": display_mode,
             "count": 0,
@@ -95,9 +96,15 @@ def _events_payload(events: list[dict[str, Any]], cfg: AppConfig, display_mode: 
         }
     event_times = [_parse_dt(str(row["time_utc"])) for row in events]
     start = min(event_times).replace(hour=0, minute=0, second=0, microsecond=0)
-    end = max(event_times).replace(hour=0, minute=0, second=0, microsecond=0)
-    frame_count = int((end - start).days // frame_days) + 1
-    frame_labels = [(start + timedelta(days=index * frame_days)).date().isoformat() for index in range(frame_count)]
+    event_day_indices = [
+        int((event_time.replace(hour=0, minute=0, second=0, microsecond=0) - start).days // frame_days)
+        for event_time in event_times
+    ]
+    # Keep the scientific time bin at one day, but animate only non-empty daily
+    # bins. Otherwise a long sparse catalog spends most frames showing no visual
+    # change, which looks like the screen is not updating.
+    frame_indices = sorted(set(event_day_indices))
+    frame_labels = [(start + timedelta(days=index * frame_days)).date().isoformat() for index in frame_indices]
     magnitudes = [_safe_float(row.get("magnitude"), 0.0) for row in events]
     depths = [_safe_float(row.get("depth_km"), _safe_float(row.get("z_m"), 0.0) / 1000.0) for row in events]
     mag_min, mag_max = min(magnitudes), max(magnitudes)
@@ -138,6 +145,7 @@ def _events_payload(events: list[dict[str, Any]], cfg: AppConfig, display_mode: 
         "depths_km": depths,
         "ids": ids,
         "frame_labels": frame_labels,
+        "frame_indices": frame_indices,
         "frame_days": frame_days,
         "mode": display_mode,
         "count": len(events),
@@ -301,6 +309,7 @@ const canvas = document.getElementById('gl');
 const gl = canvas.getContext('webgl2', {{antialias: true, alpha: false}});
 if (!gl) throw new Error('WebGL2 is required');
 const labels = payload.events.frame_labels;
+const frameIndices = payload.events.frame_indices || labels.map((_, i) => i);
 let frame = 0, timer = null, frameIntervalMs = payload.metadata.playback_frame_interval_ms || 80;
 let mode = payload.events.mode === 'window' ? 1 : 0;
 let showEvents = true, showKnown = true, showInferred = true, showOutlines = true, showBbox = true;
@@ -409,15 +418,16 @@ function render() {{
   if (showInferred) {{ drawMesh(inferredMesh,0.38); drawLine(inferredLines,[1.0,0.72,0.18,0.82]); }}
   if (showEvents && events.n > 0) {{
     const matrix = mvp(); gl.useProgram(eventProg); gl.uniformMatrix4fv(gl.getUniformLocation(eventProg,'u_mvp'), false, matrix);
-    gl.uniform1f(gl.getUniformLocation(eventProg,'u_frame'), frame); gl.uniform1i(gl.getUniformLocation(eventProg,'u_mode'), mode);
+    const currentFrameTime = frameIndices[frame] ?? frame;
+    gl.uniform1f(gl.getUniformLocation(eventProg,'u_frame'), currentFrameTime); gl.uniform1i(gl.getUniformLocation(eventProg,'u_mode'), mode);
     gl.uniform1f(gl.getUniformLocation(eventProg,'u_pointScale'), pointScale); gl.uniform1f(gl.getUniformLocation(eventProg,'u_opacityScale'), opacityScale); gl.uniform1i(gl.getUniformLocation(eventProg,'u_colorMode'), colorMode);
-    gl.uniform2f(gl.getUniformLocation(eventProg,'u_depthRange'), payload.events.depth_range_km[0], payload.events.depth_range_km[1]); gl.uniform2f(gl.getUniformLocation(eventProg,'u_timeRange'), 0, Math.max(1, labels.length-1));
+    gl.uniform2f(gl.getUniformLocation(eventProg,'u_depthRange'), payload.events.depth_range_km[0], payload.events.depth_range_km[1]); gl.uniform2f(gl.getUniformLocation(eventProg,'u_timeRange'), Math.min(...frameIndices), Math.max(1, Math.max(...frameIndices)));
     attrib(eventProg,'a_pos',events.pos,3); attrib(eventProg,'a_color',events.color,3); attrib(eventProg,'a_size',events.size,1); attrib(eventProg,'a_opacity',events.opacity,1); attrib(eventProg,'a_time',events.time,1); attrib(eventProg,'a_mag',events.mag,1); attrib(eventProg,'a_depth',events.depth,1);
     gl.drawArrays(gl.POINTS,0,events.n);
   }}
   gl.depthMask(true);
 }}
-function updateFrameLabel() {{ frameLabel.textContent = `${{labels[frame] || 'no_events'}}  ${{frame+1}}/${{labels.length}}`; slider.value = frame; }}
+function updateFrameLabel() {{ frameLabel.textContent = `${{labels[frame] || 'no_events'}}  ${{frame+1}}/${{labels.length}} / dayIndex=${{frameIndices[frame] ?? frame}}`; slider.value = frame; }}
 function setFrame(value) {{ frame = Math.max(0, Math.min(labels.length - 1, Number(value) || 0)); updateFrameLabel(); render(); }}
 function play() {{ if (timer) clearInterval(timer); timer = setInterval(() => setFrame((frame + 1) % labels.length), frameIntervalMs); }}
 function pause() {{ if (timer) clearInterval(timer); timer = null; }}
@@ -489,7 +499,8 @@ def write_webgl_events_faults(
         **metadata,
         "renderer": "webgl2_event_fault_point_sprite",
         "gaussian_shader": "fragment_alpha=opacity*exp(-3.25*r2)",
-        "event_frame_strategy": "single_event_buffer_shader_time_filter_no_frame_duplication",
+        "event_frame_strategy": "single_event_buffer_shader_time_filter_no_frame_duplication_active_event_days_only",
+        "event_frame_selection": "active_event_days_only",
         "event_time_step_days": frame_days,
         "actual_time_bin_days": frame_days,
         "playback_frame_interval_ms": 80,
@@ -499,7 +510,7 @@ def write_webgl_events_faults(
         "displayed_event_count": len(selected_events),
         "original_fault_count": len(known) + len(inferred),
         "displayed_fault_count": faults_payload["displayed_fault_count"],
-        "original_frame_count": len(events_payload["frame_labels"]),
+        "original_frame_count": len(events_payload["frame_indices"]),
         "displayed_frame_count": len(events_payload["frame_labels"]),
         "decimation_method": ", ".join(sorted({event_decimation, "none_webgl_daily_frames", fault_decimation})),
         "events_faults_map_overlay": "outline-only Japan context + target bbox in local CRS",
