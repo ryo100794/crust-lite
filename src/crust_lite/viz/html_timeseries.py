@@ -71,6 +71,7 @@ Plotly.newPlot("crust-lite-fallback", [], {{}});
 def write_index(config: AppConfig, paths: ProjectPaths, metadata: dict[str, Any]) -> Path:
     links = [
         ("events_faults_timeseries.html", "震源・既知断層・推定断層 3D時系列"),
+        ("array_projection_splats.html", "波形スプラット・断層比較 3D"),
         ("stress_timeseries_3d.html", "応力変化 3D時系列"),
         ("failure_scenarios_3d.html", "100年シナリオ 3D"),
         ("japan_archipelago_context.html", "日本列島コンテキスト地図"),
