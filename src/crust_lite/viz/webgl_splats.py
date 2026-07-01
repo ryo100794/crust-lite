@@ -4,8 +4,12 @@ import json
 import math
 from typing import Any
 
+import numpy as np
+
 from crust_lite.config import AppConfig
-from crust_lite.geo import LocalProjector
+from crust_lite.geo import LocalProjector, fault_rectangle_vertices
+from crust_lite.io.geopackage import read_features
+from crust_lite.io.parquet import write_table
 from crust_lite.paths import ProjectPaths
 from crust_lite.viz.japan_outline import JapanOutline, local_context_outlines
 from crust_lite.viz.tectonics import TectonicLine, tectonic_context_from_config
@@ -382,6 +386,277 @@ def _terrain_payload(config: AppConfig, is_sample: bool) -> dict[str, Any]:
     }
 
 
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        number = float(value)
+    except Exception:
+        return default
+    if not math.isfinite(number):
+        return default
+    return number
+
+
+def _fault_is_inferred(props: dict[str, Any]) -> bool:
+    value = props.get("is_inferred", False)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y"}
+    return bool(value)
+
+
+def _fault_segment_id(feature: dict[str, Any], index: int) -> str:
+    props = feature.get("properties", {}) if isinstance(feature.get("properties", {}), dict) else {}
+    return str(props.get("segment_id") or props.get("id") or props.get("name") or f"fault_{index:04d}")
+
+
+def _fault_trace_xy(feature: dict[str, Any], projector: LocalProjector) -> list[tuple[float, float]]:
+    geom = feature.get("geometry", {}) if isinstance(feature.get("geometry", {}), dict) else {}
+    local = geom.get("local_trace_m")
+    if isinstance(local, list) and len(local) >= 2:
+        pts: list[tuple[float, float]] = []
+        for item in local:
+            if isinstance(item, list | tuple) and len(item) >= 2:
+                pts.append((_safe_float(item[0]), _safe_float(item[1])))
+        if len(pts) >= 2:
+            return pts
+    coords = geom.get("coordinates", [])
+    if geom.get("type") == "MultiLineString" and coords:
+        coords = max(coords, key=lambda part: len(part) if isinstance(part, list) else 0)
+    pts = []
+    if isinstance(coords, list):
+        for item in coords:
+            if isinstance(item, list | tuple) and len(item) >= 2:
+                x, y = projector.lonlat_to_xy(_safe_float(item[0]), _safe_float(item[1]))
+                pts.append((x, y))
+    return pts
+
+
+def _fault_center_xy(feature: dict[str, Any], projector: LocalProjector) -> tuple[float, float]:
+    props = feature.get("properties", {}) if isinstance(feature.get("properties", {}), dict) else {}
+    cx = props.get("center_x_m")
+    cy = props.get("center_y_m")
+    if cx not in (None, "") and cy not in (None, ""):
+        return _safe_float(cx), _safe_float(cy)
+    trace = _fault_trace_xy(feature, projector)
+    if trace:
+        return sum(p[0] for p in trace) / len(trace), sum(p[1] for p in trace) / len(trace)
+    return 0.0, 0.0
+
+
+def _fault_depth_center_km(props: dict[str, Any]) -> float:
+    if props.get("center_depth_km") not in (None, ""):
+        return max(0.0, _safe_float(props.get("center_depth_km")))
+    top = _safe_float(props.get("top_depth_km"), 0.0)
+    bottom = _safe_float(props.get("bottom_depth_km"), max(10.0, top + _safe_float(props.get("width_km"), 10.0)))
+    return max(0.0, 0.5 * (top + bottom))
+
+
+def _fault_line_length_km(trace: list[tuple[float, float]]) -> float:
+    if len(trace) < 2:
+        return 0.0
+    return sum(math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(trace, trace[1:], strict=False)) / 1000.0
+
+
+def _score_color(value: float) -> list[float]:
+    t = max(0.0, min(1.0, value))
+    if t < 0.5:
+        f = t / 0.5
+        return [0.20 + 0.45 * f, 0.72 + 0.18 * f, 1.00 - 0.70 * f]
+    f = (t - 0.5) / 0.5
+    return [0.65 + 0.35 * f, 0.90 - 0.18 * f, 0.30 - 0.12 * f]
+
+
+def _read_fault_features(paths: ProjectPaths) -> tuple[list[dict[str, Any]], int, int]:
+    known = read_features(paths.data_processed / "fault_segment.gpkg") if (paths.data_processed / "fault_segment.gpkg").exists() else []
+    inferred = read_features(paths.data_processed / "inferred_faults.gpkg") if (paths.data_processed / "inferred_faults.gpkg").exists() else []
+    return [*known, *inferred], len(known), len(inferred)
+
+
+def _point_segment_distance_m(x: np.ndarray, y: np.ndarray, ax: float, ay: float, bx: float, by: float) -> np.ndarray:
+    vx = bx - ax
+    vy = by - ay
+    denom = max(vx * vx + vy * vy, 1.0e-9)
+    t = np.clip(((x - ax) * vx + (y - ay) * vy) / denom, 0.0, 1.0)
+    px = ax + t * vx
+    py = ay + t * vy
+    return np.sqrt((x - px) ** 2 + (y - py) ** 2)
+
+
+def _fault_wave_interaction_rows(
+    config: AppConfig,
+    features: list[dict[str, Any]],
+    rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    structure = [row for row in rows if str(row.get("splat_role", "structure")) == "structure"]
+    if not features or not structure:
+        return []
+    xs = np.asarray([_safe_float(row.get("x_m")) for row in structure], dtype=np.float64)
+    ys = np.asarray([_safe_float(row.get("y_m")) for row in structure], dtype=np.float64)
+    zs = np.asarray([_depth_center_m(row) for row in structure], dtype=np.float64)
+    amplitudes = np.asarray(
+        [max(_safe_float(row.get("structure_amplitude")), _safe_float(row.get("amplitude"))) for row in structure],
+        dtype=np.float64,
+    )
+    type_weight = np.asarray(
+        [
+            1.0 if str(row.get("primitive_type")) == "reflected" else 0.82 if str(row.get("primitive_type")) == "scattered" else 0.45
+            for row in structure
+        ],
+        dtype=np.float64,
+    )
+    weights = amplitudes * type_weight
+    primitive_types = [str(row.get("primitive_type")) for row in structure]
+    reflected_mask = np.asarray([value == "reflected" for value in primitive_types], dtype=bool)
+    scattered_mask = np.asarray([value == "scattered" for value in primitive_types], dtype=bool)
+    projector = LocalProjector(config.region)
+    horizontal_sigma_m = 30_000.0
+    vertical_sigma_m = 35_000.0
+    raw_scores: list[float] = []
+    out: list[dict[str, Any]] = []
+    for index, feature in enumerate(features):
+        props = feature.get("properties", {}) if isinstance(feature.get("properties", {}), dict) else {}
+        trace = _fault_trace_xy(feature, projector)
+        if len(trace) < 2:
+            cx, cy = _fault_center_xy(feature, projector)
+            length_km = max(5.0, _safe_float(props.get("length_km"), 10.0))
+            strike = math.radians(_safe_float(props.get("strike"), 0.0))
+            dx = 0.5 * length_km * 1000.0 * math.sin(strike)
+            dy = 0.5 * length_km * 1000.0 * math.cos(strike)
+            trace = [(cx - dx, cy - dy), (cx + dx, cy + dy)]
+        min_dist = np.full(xs.shape, np.inf, dtype=np.float64)
+        for start, end in zip(trace, trace[1:], strict=False):
+            min_dist = np.minimum(min_dist, _point_segment_distance_m(xs, ys, start[0], start[1], end[0], end[1]))
+        depth_center_m = _fault_depth_center_km(props) * 1000.0
+        depth_sigma_m = max(vertical_sigma_m, 0.5 * max(1.0, _safe_float(props.get("width_km"), 10.0)) * 1000.0)
+        kernel = np.exp(-0.5 * (min_dist / horizontal_sigma_m) ** 2) * np.exp(-0.5 * ((zs - depth_center_m) / depth_sigma_m) ** 2)
+        weighted = weights * kernel
+        raw_score = float(np.sum(weighted) / math.sqrt(max(1.0, _safe_float(props.get("length_km"), _fault_line_length_km(trace)))))
+        near = kernel >= math.exp(-0.5)
+        reflected_energy = float(np.sum(weighted[reflected_mask]))
+        scattered_energy = float(np.sum(weighted[scattered_mask]))
+        residual_energy = float(max(0.0, np.sum(weighted) - reflected_energy - scattered_energy))
+        raw_scores.append(raw_score)
+        out.append(
+            {
+                "segment_id": _fault_segment_id(feature, index),
+                "source": str(props.get("source", "unknown")),
+                "is_inferred": _fault_is_inferred(props),
+                "raw_wave_interaction_score": raw_score,
+                "wave_interaction_score": 0.0,
+                "near_splat_count": int(np.count_nonzero(near)),
+                "reflected_energy": reflected_energy,
+                "scattered_energy": scattered_energy,
+                "residual_energy": residual_energy,
+                "fault_length_km": _safe_float(props.get("length_km"), _fault_line_length_km(trace)),
+                "fault_center_depth_km": depth_center_m / 1000.0,
+                "kernel_horizontal_sigma_km": horizontal_sigma_m / 1000.0,
+                "kernel_vertical_sigma_km": depth_sigma_m / 1000.0,
+                "interpretation": "relative late-phase splat concentration near this fault trace; not proof of a unique reflector or rupture forecast",
+            }
+        )
+    max_score = max(raw_scores) if raw_scores else 0.0
+    for row in out:
+        row["wave_interaction_score"] = row["raw_wave_interaction_score"] / max_score if max_score > 0.0 else 0.0
+    return out
+
+
+def _is_regional_sheet_fault(feature: dict[str, Any]) -> bool:
+    props = feature.get("properties", {}) if isinstance(feature.get("properties", {}), dict) else {}
+    if not _fault_is_inferred(props):
+        return False
+    return _safe_float(props.get("length_km"), 0.0) > 800.0 or _safe_float(props.get("width_km"), 0.0) > 300.0
+
+
+def _faults_payload(config: AppConfig, paths: ProjectPaths, rows: list[dict[str, Any]]) -> dict[str, Any]:
+    features, known_count, inferred_count = _read_fault_features(paths)
+    broad_features = [feature for feature in features if _is_regional_sheet_fault(feature)]
+    regional_features = [feature for feature in features if not _is_regional_sheet_fault(feature)]
+    display_features = regional_features or features
+    if len(display_features) > config.visualization_3d.max_fault_segments:
+        display_features = sorted(
+            display_features,
+            key=lambda feature: _safe_float(
+                feature.get("properties", {}).get("fault_score", feature.get("properties", {}).get("confidence", 0.0))
+            ),
+            reverse=True,
+        )[: config.visualization_3d.max_fault_segments]
+    interaction = _fault_wave_interaction_rows(config, display_features, rows)
+    interaction_by_id = {row["segment_id"]: row for row in interaction}
+    if interaction:
+        write_table(
+            interaction,
+            paths.data_processed / "fault_wave_interaction.parquet",
+            {
+                "method": "relative_late_phase_splat_density_near_fault_traces",
+                "known_fault_count": known_count,
+                "inferred_fault_count": inferred_count,
+                "fault_count": len(display_features),
+                "total_fault_count": len(features),
+                "broad_regional_sheet_faults_excluded": len(broad_features),
+                "not_prediction": True,
+            },
+        )
+    projector = LocalProjector(config.region)
+    vertical = config.visualization_3d.vertical_exaggeration
+    line_positions: list[float] = []
+    line_colors: list[float] = []
+    mesh_positions: list[float] = []
+    mesh_colors: list[float] = []
+    labels: list[dict[str, Any]] = []
+    for index, feature in enumerate(display_features):
+        props = feature.get("properties", {}) if isinstance(feature.get("properties", {}), dict) else {}
+        segment_id = _fault_segment_id(feature, index)
+        score = _safe_float(interaction_by_id.get(segment_id, {}).get("wave_interaction_score", 0.0))
+        color = _score_color(score)
+        trace = _fault_trace_xy(feature, projector)
+        center_depth_m = _fault_depth_center_km(props) * 1000.0
+        if len(trace) >= 2:
+            for a, b in zip(trace, trace[1:], strict=False):
+                z = -1.0 * center_depth_m * vertical
+                line_positions.extend([_round(a[0]), _round(a[1]), _round(z), _round(b[0]), _round(b[1]), _round(z)])
+                line_colors.extend([*color, *color])
+        cx, cy = _fault_center_xy(feature, projector)
+        length_km = max(0.5, min(300.0, _safe_float(props.get("length_km"), max(5.0, _fault_line_length_km(trace)))))
+        width_km = max(0.5, min(80.0, _safe_float(props.get("width_km"), 12.0)))
+        verts = fault_rectangle_vertices(
+            cx,
+            cy,
+            _fault_depth_center_km(props),
+            _safe_float(props.get("strike"), 0.0),
+            _safe_float(props.get("dip"), 70.0),
+            length_km,
+            width_km,
+        )
+        display_verts = [[float(v[0]), float(v[1]), -1.0 * float(v[2]) * vertical] for v in verts]
+        for vertex in [display_verts[0], display_verts[1], display_verts[2], display_verts[0], display_verts[2], display_verts[3]]:
+            mesh_positions.extend([_round(vertex[0]), _round(vertex[1]), _round(vertex[2])])
+            mesh_colors.extend(color)
+        labels.append(
+            {
+                "segment_id": segment_id,
+                "is_inferred": _fault_is_inferred(props),
+                "source": str(props.get("source", "unknown")),
+                "wave_interaction_score": score,
+                "near_splat_count": interaction_by_id.get(segment_id, {}).get("near_splat_count", 0),
+            }
+        )
+    return {
+        "line_positions": line_positions,
+        "line_colors": line_colors,
+        "mesh_positions": mesh_positions,
+        "mesh_colors": mesh_colors,
+        "labels": labels,
+        "known_fault_count": known_count,
+        "inferred_fault_count": inferred_count,
+        "displayed_fault_count": len(display_features),
+        "total_fault_count": len(features),
+        "broad_regional_sheet_faults_excluded": len(broad_features),
+        "regional_fault_filter": "exclude inferred PCA sheets with length_km>800 or width_km>300 from default fault-wave overlay",
+        "interaction_rows": interaction,
+        "wave_interaction_method": "relative late-phase reflected/scattered splat concentration near fault traces",
+    }
+
+
 def _tectonics_payload(config: AppConfig) -> dict[str, Any]:
     projector = LocalProjector(config.region)
     vertical = config.visualization_3d.vertical_exaggeration
@@ -506,12 +781,20 @@ def _splat_payload(config: AppConfig, rows: list[dict[str, Any]]) -> dict[str, A
     }
 
 
-def _bounds_from_payload(splats: dict[str, Any], terrain: dict[str, Any], tectonics: dict[str, Any] | None = None) -> dict[str, float]:
+def _bounds_from_payload(
+    splats: dict[str, Any],
+    terrain: dict[str, Any],
+    tectonics: dict[str, Any] | None = None,
+    faults: dict[str, Any] | None = None,
+) -> dict[str, float]:
     values = [splats["positions"], terrain["positions"]]
     values.extend(outline["positions"] for outline in terrain.get("outlines", []))
     if tectonics is not None:
         values.extend(line["positions"] for line in tectonics.get("boundaries", []))
         values.extend(line["positions"] for line in tectonics.get("interfaces", []))
+    if faults is not None:
+        values.append(faults.get("line_positions", []))
+        values.append(faults.get("mesh_positions", []))
     xs: list[float] = []
     ys: list[float] = []
     zs: list[float] = []
@@ -585,8 +868,11 @@ def _webgl_html(payload: dict[str, Any]) -> str:
     <label><input id="outlineToggle" type="checkbox" checked>Japan outline</label>
     <label><input id="plateBoundaryToggle" type="checkbox">plate boundaries</label>
     <label><input id="plateInterfaceToggle" type="checkbox">slab/interface lines</label>
+    <label><input id="faultLineToggle" type="checkbox" checked>fault-wave traces</label>
+    <label><input id="faultSurfaceToggle" type="checkbox">fault surfaces</label>
     <label><input id="lineToggle" type="checkbox">source-projection guides</label>
   </div>
+  <div>fault color: relative reflected/scattered splat concentration near each fault trace. Known active faults require a loaded fault_segment layer.</div>
   <div id="plateOverlayNote"></div>
   <div>z note: waveform data do not directly observe depth; direct/late z is an uncertainty-aware computational center.</div>
   <div>
@@ -603,7 +889,7 @@ const gl = canvas.getContext('webgl2', {{antialias: true, alpha: false}});
 if (!gl) throw new Error('WebGL2 is required');
 const depthUncertainty = payload.metadata.depth_diagnostics.uncertainty || {{rows_with_complete_p05_p50_p95: 0}};
 document.getElementById('stats').textContent =
-  `splats=${{payload.metadata.displayed_splats}} / depth p05-p95 rows=${{depthUncertainty.rows_with_complete_p05_p50_p95}} / clipped late=${{payload.metadata.depth_diagnostics.late_delay_clipped_count}} / outline vertices=${{payload.terrain.outline_vertices}}`;
+  `splats=${{payload.metadata.displayed_splats}} / faults=${{payload.faults.displayed_fault_count}} / fault-wave rows=${{payload.faults.interaction_rows.length}} / depth p05-p95 rows=${{depthUncertainty.rows_with_complete_p05_p50_p95}} / clipped late=${{payload.metadata.depth_diagnostics.late_delay_clipped_count}} / outline vertices=${{payload.terrain.outline_vertices}}`;
 document.getElementById('plateOverlayNote').textContent = payload.metadata.tectonic_overlay_note;
 
 function shader(type, src) {{
@@ -721,6 +1007,8 @@ const sourceLines = {{ n: payload.splats.source_lines.length / 3, pos: buf(normP
 const outlineBuffers = payload.terrain.outlines.map(o => ({{ name:o.name, n:o.positions.length/3, pos:buf(normPositions(o.positions)) }}));
 const plateBoundaryBuffers = payload.tectonics.boundaries.map(o => ({{ name:o.name, color:o.color, n:o.positions.length/3, pos:buf(normPositions(o.positions)) }}));
 const plateInterfaceBuffers = payload.tectonics.interfaces.map(o => ({{ name:o.name, color:o.color, n:o.positions.length/3, pos:buf(normPositions(o.positions)) }}));
+const faultLines = {{ n: payload.faults.line_positions.length/3, pos: buf(normPositions(payload.faults.line_positions)), color: buf(new Float32Array(payload.faults.line_colors)) }};
+const faultSurfaces = {{ n: payload.faults.mesh_positions.length/3, pos: buf(normPositions(payload.faults.mesh_positions)), color: buf(new Float32Array(payload.faults.mesh_colors)) }};
 
 function attrib(p, name, buffer, size) {{
   const loc = gl.getAttribLocation(p, name);
@@ -749,7 +1037,7 @@ function lookAt(eye, target, up) {{
   return o;
 }}
 let yaw=0.72, pitch=0.46, dist=3.2, pan=[0,0,0];
-let visible=[1,1,1,1], depthVisible=[1,1,1,1], roleVisible=[0,1,0,1], showTerrain=false, showOutlines=true, showPlateBoundaries=Boolean(payload.tectonics.default_show), showPlateInterfaces=Boolean(payload.tectonics.default_show), showLines=false, splatScale=1.45, opacityScale=1.0, colorMode=0;
+let visible=[1,1,1,1], depthVisible=[1,1,1,1], roleVisible=[0,1,0,1], showTerrain=false, showOutlines=true, showPlateBoundaries=Boolean(payload.tectonics.default_show), showPlateInterfaces=Boolean(payload.tectonics.default_show), showFaultLines=true, showFaultSurfaces=false, showLines=false, splatScale=1.45, opacityScale=1.0, colorMode=0;
 const pointers = new Map();
 let lastCentroid = null, lastPinchDistance = 0, lastPointer = null, panning = false;
 function mvp() {{
@@ -771,6 +1059,22 @@ function pointerDistance() {{
 function panBy(dx, dy) {{
   pan[0] -= dx / 420;
   pan[2] += dy / 420;
+}}
+function drawColoredLines(obj, alpha) {{
+  if (obj.n <= 0) return;
+  gl.useProgram(meshProg);
+  gl.uniformMatrix4fv(gl.getUniformLocation(meshProg,'u_mvp'), false, mvp());
+  gl.uniform1f(gl.getUniformLocation(meshProg,'u_alpha'), alpha);
+  attrib(meshProg,'a_pos',obj.pos,3); attrib(meshProg,'a_color',obj.color,3);
+  gl.drawArrays(gl.LINES,0,obj.n);
+}}
+function drawColoredTriangles(obj, alpha) {{
+  if (obj.n <= 0) return;
+  gl.useProgram(meshProg);
+  gl.uniformMatrix4fv(gl.getUniformLocation(meshProg,'u_mvp'), false, mvp());
+  gl.uniform1f(gl.getUniformLocation(meshProg,'u_alpha'), alpha);
+  attrib(meshProg,'a_pos',obj.pos,3); attrib(meshProg,'a_color',obj.color,3);
+  gl.drawArrays(gl.TRIANGLES,0,obj.n);
 }}
 function render() {{
   gl.clearColor(0.027,0.063,0.082,1); gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
@@ -799,6 +1103,8 @@ function render() {{
       attrib(lineProg,'a_pos',line.pos,3); gl.drawArrays(gl.LINE_STRIP,0,line.n);
     }}
   }}
+  if (showFaultSurfaces) drawColoredTriangles(faultSurfaces, 0.16);
+  if (showFaultLines) drawColoredLines(faultLines, 0.92);
   if (showLines) {{
     gl.uniform4f(gl.getUniformLocation(lineProg,'u_color'), 0.65, 0.78, 0.90, 0.23);
     attrib(lineProg,'a_pos',sourceLines.pos,3); gl.drawArrays(gl.LINES,0,sourceLines.n);
@@ -866,6 +1172,8 @@ document.getElementById('plateBoundaryToggle').checked = showPlateBoundaries;
 document.getElementById('plateInterfaceToggle').checked = showPlateInterfaces;
 document.getElementById('plateBoundaryToggle').addEventListener('change', e => {{ showPlateBoundaries=e.target.checked; render(); }});
 document.getElementById('plateInterfaceToggle').addEventListener('change', e => {{ showPlateInterfaces=e.target.checked; render(); }});
+document.getElementById('faultLineToggle').addEventListener('change', e => {{ showFaultLines=e.target.checked; render(); }});
+document.getElementById('faultSurfaceToggle').addEventListener('change', e => {{ showFaultSurfaces=e.target.checked; render(); }});
 document.getElementById('lineToggle').addEventListener('change', e => {{ showLines=e.target.checked; render(); }});
 document.getElementById('scaleSlider').addEventListener('input', e => {{ splatScale=Number(e.target.value); render(); }});
 document.getElementById('opacitySlider').addEventListener('input', e => {{ opacityScale=Number(e.target.value); render(); }});
@@ -883,6 +1191,7 @@ def write_webgl_splat_preview(config: AppConfig, paths: ProjectPaths, rows: list
     depth_diagnostics = _depth_diagnostics(config, limit_rows)
     terrain = _terrain_payload(config, is_sample=is_sample)
     tectonics = _tectonics_payload(config)
+    faults = _faults_payload(config, paths, limit_rows)
     metadata = {
         "html": str(paths.outputs_3d / "array_projection_splats.html"),
         "renderer": "webgl2_gaussian_point_sprite",
@@ -940,16 +1249,26 @@ def write_webgl_splat_preview(config: AppConfig, paths: ProjectPaths, rows: list
             if tectonics["literature_based"]
             else "No external plate-interface model was loaded; schematic plate fallback is disabled to avoid a misleading overlay."
         ),
+        "fault_overlay_known_count": faults["known_fault_count"],
+        "fault_overlay_inferred_count": faults["inferred_fault_count"],
+        "fault_overlay_displayed_count": faults["displayed_fault_count"],
+        "fault_wave_interaction_method": faults["wave_interaction_method"],
+        "fault_wave_interaction_rows": len(faults["interaction_rows"]),
+        "fault_overlay_total_count": faults["total_fault_count"],
+        "fault_overlay_broad_regional_sheet_excluded_count": faults["broad_regional_sheet_faults_excluded"],
+        "regional_fault_filter": faults["regional_fault_filter"],
+        "active_fault_data_status": "known_active_faults_loaded" if faults["known_fault_count"] else "no_known_active_fault_layer_loaded_in_current_run",
         "sample_lightweight_rendering": is_sample,
         "rendering": "WebGL2 high-density point-sprite Gaussian splats with outline-only Japan context; not Plotly mesh ellipsoids",
         "not_prediction": True,
     }
     payload = {
         "metadata": metadata,
-        "bounds": _bounds_from_payload(splats, terrain, tectonics),
+        "bounds": _bounds_from_payload(splats, terrain, tectonics, faults),
         "splats": splats,
         "terrain": terrain,
         "tectonics": tectonics,
+        "faults": faults,
     }
     out = paths.outputs_3d / "array_projection_splats.html"
     out.write_text(_webgl_html(payload), encoding="utf-8")
