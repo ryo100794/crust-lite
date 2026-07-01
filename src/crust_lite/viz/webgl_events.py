@@ -297,8 +297,9 @@ def _html(payload: dict[str, Any]) -> str:
   </div>
   <div>
     <label>event color <select id="colorMode"><option value="0" selected>magnitude</option><option value="1">depth</option><option value="2">time</option></select></label>
-    event scale <input id="scaleSlider" type="range" min="0.4" max="5" step="0.05" value="1.35">
-    opacity <input id="opacitySlider" type="range" min="0.2" max="1.8" step="0.05" value="1.0">
+    event scale <input id="scaleSlider" type="range" min="0.4" max="8" step="0.05" value="2.4">
+    opacity <input id="opacitySlider" type="range" min="0.2" max="2.4" step="0.05" value="1.2">
+    trail days <input id="trailSlider" type="range" min="0" max="90" step="1" value="14"><span id="trailLabel">14</span>
   </div>
   <div>drag: rotate / wheel or pinch: zoom / shift+drag or two-finger drag: pan</div>
 </div>
@@ -313,7 +314,7 @@ const frameIndices = payload.events.frame_indices || labels.map((_, i) => i);
 let frame = 0, timer = null, frameIntervalMs = payload.metadata.playback_frame_interval_ms || 80;
 let mode = payload.events.mode === 'window' ? 1 : 0;
 let showEvents = true, showKnown = true, showInferred = true, showOutlines = true, showBbox = true;
-let pointScale = 1.35, opacityScale = 1.0, colorMode = 0;
+let pointScale = 2.4, opacityScale = 1.2, colorMode = 0, trailDays = payload.metadata.event_trail_days || 14;
 document.getElementById('stats').textContent = `events=${{payload.events.count}} / faults=${{payload.faults.displayed_fault_count}} / frames=${{labels.length}} / step=${{payload.events.frame_days}} day(s) / renderer=${{payload.metadata.renderer}}`;
 const slider = document.getElementById('timeSlider'); slider.max = Math.max(0, labels.length - 1);
 const frameLabel = document.getElementById('frameLabel');
@@ -323,22 +324,26 @@ function program(vs, fs) {{ const p=gl.createProgram(); gl.attachShader(p,shader
 const eventVS = `#version 300 es
 precision highp float;
 in vec3 a_pos; in vec3 a_color; in float a_size; in float a_opacity; in float a_time; in float a_mag; in float a_depth;
-uniform mat4 u_mvp; uniform float u_frame; uniform int u_mode; uniform float u_pointScale;
-out vec3 v_color; out float v_opacity; out float v_visible; out float v_mag; out float v_depth; out float v_time;
+uniform mat4 u_mvp; uniform float u_frame; uniform int u_mode; uniform float u_pointScale; uniform float u_trailDays;
+out vec3 v_color; out float v_opacity; out float v_visible; out float v_mag; out float v_depth; out float v_time; out float v_timeDelta; out float v_current;
 void main() {{
   vec4 clip = u_mvp * vec4(a_pos, 1.0);
   gl_Position = clip;
-  float inWindow = 1.0 - step(0.5, abs(a_time - u_frame));
+  float delta = abs(a_time - u_frame);
+  float current = 1.0 - step(0.5, delta);
+  float inWindow = u_trailDays <= 0.0 ? current : 1.0 - step(u_trailDays + 0.5, delta);
   float cumulative = step(a_time, u_frame + 0.01);
   v_visible = u_mode == 0 ? cumulative : inWindow;
   float perspectiveScale = clamp(1.0 / max(0.25, clip.w), 0.35, 3.0);
-  gl_PointSize = clamp(a_size * u_pointScale * perspectiveScale, 2.0, 160.0);
-  v_color = a_color; v_opacity = a_opacity; v_mag = a_mag; v_depth = a_depth; v_time = a_time;
+  float fade = u_trailDays <= 0.0 ? current : 1.0 - clamp(delta / max(u_trailDays, 1.0), 0.0, 1.0);
+  float highlight = mix(1.0, 2.6, current);
+  gl_PointSize = clamp(a_size * u_pointScale * perspectiveScale * highlight * mix(0.65, 1.0, fade), 2.5, 240.0);
+  v_color = a_color; v_opacity = a_opacity; v_mag = a_mag; v_depth = a_depth; v_time = a_time; v_timeDelta = delta; v_current = current;
 }}`;
 const eventFS = `#version 300 es
 precision highp float;
-in vec3 v_color; in float v_opacity; in float v_visible; in float v_mag; in float v_depth; in float v_time;
-uniform float u_opacityScale; uniform int u_colorMode; uniform vec2 u_depthRange; uniform vec2 u_timeRange;
+in vec3 v_color; in float v_opacity; in float v_visible; in float v_mag; in float v_depth; in float v_time; in float v_timeDelta; in float v_current;
+uniform float u_opacityScale; uniform int u_colorMode; uniform vec2 u_depthRange; uniform vec2 u_timeRange; uniform float u_trailDays;
 out vec4 outColor;
 vec3 ramp(float t) {{
   t = clamp(t, 0.0, 1.0);
@@ -356,7 +361,10 @@ void main() {{
   vec3 color = v_color;
   if (u_colorMode == 1) color = ramp((v_depth - u_depthRange.x) / max(1e-6, u_depthRange.y - u_depthRange.x));
   if (u_colorMode == 2) color = ramp((v_time - u_timeRange.x) / max(1e-6, u_timeRange.y - u_timeRange.x));
-  outColor = vec4(color, clamp(v_opacity * u_opacityScale * gaussian, 0.0, 0.94));
+  float fade = u_trailDays <= 0.0 ? 1.0 : 1.0 - clamp(v_timeDelta / max(u_trailDays, 1.0), 0.0, 1.0);
+  color = mix(color, vec3(1.0, 0.96, 0.42), 0.68 * v_current);
+  float alpha = clamp(v_opacity * u_opacityScale * gaussian * mix(0.25, 1.0, fade), 0.0, 0.98);
+  outColor = vec4(color, alpha);
 }}`;
 const meshVS = `#version 300 es
 precision highp float;
@@ -414,16 +422,18 @@ function render() {{
   if (showOutlines) for (const o of outlineLines) drawLineStrip(o, [0.82,1.0,0.78,0.95]);
   if (showBbox) drawLineStrip(bboxLine, [1.0,0.37,0.18,0.95]);
   gl.depthMask(false);
-  if (showKnown) {{ drawMesh(knownMesh,0.30); drawLine(knownLines,[0.76,0.90,1.0,0.78]); }}
-  if (showInferred) {{ drawMesh(inferredMesh,0.38); drawLine(inferredLines,[1.0,0.72,0.18,0.82]); }}
+  if (showKnown) {{ drawMesh(knownMesh,0.14); drawLine(knownLines,[0.76,0.90,1.0,0.72]); }}
+  if (showInferred) {{ drawMesh(inferredMesh,0.18); drawLine(inferredLines,[1.0,0.72,0.18,0.78]); }}
   if (showEvents && events.n > 0) {{
+    gl.disable(gl.DEPTH_TEST);
     const matrix = mvp(); gl.useProgram(eventProg); gl.uniformMatrix4fv(gl.getUniformLocation(eventProg,'u_mvp'), false, matrix);
     const currentFrameTime = frameIndices[frame] ?? frame;
     gl.uniform1f(gl.getUniformLocation(eventProg,'u_frame'), currentFrameTime); gl.uniform1i(gl.getUniformLocation(eventProg,'u_mode'), mode);
-    gl.uniform1f(gl.getUniformLocation(eventProg,'u_pointScale'), pointScale); gl.uniform1f(gl.getUniformLocation(eventProg,'u_opacityScale'), opacityScale); gl.uniform1i(gl.getUniformLocation(eventProg,'u_colorMode'), colorMode);
+    gl.uniform1f(gl.getUniformLocation(eventProg,'u_pointScale'), pointScale); gl.uniform1f(gl.getUniformLocation(eventProg,'u_opacityScale'), opacityScale); gl.uniform1i(gl.getUniformLocation(eventProg,'u_colorMode'), colorMode); gl.uniform1f(gl.getUniformLocation(eventProg,'u_trailDays'), mode == 1 ? trailDays : 0.0);
     gl.uniform2f(gl.getUniformLocation(eventProg,'u_depthRange'), payload.events.depth_range_km[0], payload.events.depth_range_km[1]); gl.uniform2f(gl.getUniformLocation(eventProg,'u_timeRange'), Math.min(...frameIndices), Math.max(1, Math.max(...frameIndices)));
     attrib(eventProg,'a_pos',events.pos,3); attrib(eventProg,'a_color',events.color,3); attrib(eventProg,'a_size',events.size,1); attrib(eventProg,'a_opacity',events.opacity,1); attrib(eventProg,'a_time',events.time,1); attrib(eventProg,'a_mag',events.mag,1); attrib(eventProg,'a_depth',events.depth,1);
     gl.drawArrays(gl.POINTS,0,events.n);
+    gl.enable(gl.DEPTH_TEST);
   }}
   gl.depthMask(true);
 }}
@@ -457,6 +467,7 @@ document.getElementById('bboxToggle').addEventListener('change', e => {{ showBbo
 document.getElementById('colorMode').addEventListener('change', e => {{ colorMode=Number(e.target.value); render(); }});
 document.getElementById('scaleSlider').addEventListener('input', e => {{ pointScale=Number(e.target.value); render(); }});
 document.getElementById('opacitySlider').addEventListener('input', e => {{ opacityScale=Number(e.target.value); render(); }});
+document.getElementById('trailSlider').addEventListener('input', e => {{ trailDays=Number(e.target.value); document.getElementById('trailLabel').textContent=String(trailDays); render(); }});
 addEventListener('resize', resize); updateFrameLabel(); resize();
 </script>
 </body>
@@ -504,6 +515,9 @@ def write_webgl_events_faults(
         "event_time_step_days": frame_days,
         "actual_time_bin_days": frame_days,
         "playback_frame_interval_ms": 80,
+        "event_trail_days": 14,
+        "event_animation_visibility": "window mode highlights the current day and fades nearby event days so playback visibly changes",
+        "event_depth_test": "disabled for event points so static fault/context geometry cannot hide the time animation",
         "camera_persistence": "single WebGL camera state; slider changes do not recreate the scene",
         "old_frame_residue_prevention": "events are filtered by a uniform frame index in one draw call; previous frame geometry is not appended",
         "original_event_count": len(events),
