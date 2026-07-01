@@ -120,6 +120,11 @@ SPLAT_COLUMNS = [
     "depth_p05_km",
     "depth_p50_km",
     "depth_p95_km",
+    "depth_sample_center_km",
+    "depth_sample_index",
+    "depth_sample_count",
+    "depth_sample_weight",
+    "depth_quadrature_method",
     "depth_velocity_min_km_s",
     "depth_velocity_max_km_s",
     "depth_velocity_samples",
@@ -253,6 +258,54 @@ def _depth_interval_from_uncertainty(depth_km: float, uncertainty_km: float, max
     unc = max(0.0, float(uncertainty_km))
     center = max(0.0, min(float(max_depth_km), float(depth_km)))
     return max(0.0, center - unc), center, min(float(max_depth_km), center + unc)
+
+
+def _depth_quadrature_points(
+    config: AppConfig,
+    depth_p05_km: float,
+    depth_p50_km: float,
+    depth_p95_km: float,
+    primitive_type: str,
+    is_structure_candidate: bool,
+) -> list[tuple[int, int, float, float, str]]:
+    """Return weighted depth centers for one projected primitive.
+
+    The earlier prototype collapsed every late-phase candidate to one median
+    depth, which made p50 quantization appear as false horizontal layers. For
+    structure candidates we keep a small deterministic quadrature over the
+    p05-p50-p95 interval. Direct catalog hypocenters remain single anchors so
+    their catalog-depth uncertainty is not misrepresented as imaged structure.
+    """
+    sample_count = max(1, int(config.waveform_array.depth_quadrature_samples))
+    if sample_count % 2 == 0:
+        sample_count += 1
+    max_depth_km = float(config.filters.max_depth_km)
+    lo = max(0.0, min(max_depth_km, float(depth_p05_km)))
+    mid = max(0.0, min(max_depth_km, float(depth_p50_km)))
+    hi = max(0.0, min(max_depth_km, float(depth_p95_km)))
+    if lo > mid or mid > hi:
+        lo, mid, hi = _depth_interval_from_uncertainty(mid, max(0.0, 0.5 * (hi - lo)), max_depth_km)
+    min_width = max(0.0, float(config.waveform_array.depth_quadrature_min_width_km))
+    if sample_count <= 1 or not is_structure_candidate or primitive_type == "direct" or hi - lo < min_width:
+        return [(0, 1, mid, 1.0, "single_depth_center")]
+
+    depths: list[float] = []
+    for idx in range(sample_count):
+        q = (idx + 0.5) / sample_count
+        if q < 0.5:
+            t = q / 0.5
+            depth = lo * (1.0 - t) + mid * t
+        else:
+            t = (q - 0.5) / 0.5
+            depth = mid * (1.0 - t) + hi * t
+        depths.append(max(0.0, min(max_depth_km, depth)))
+    sigma_km = max(min_width, (hi - lo) / (2.0 * 1.6448536269514722))
+    weights = [math.exp(-0.5 * ((depth - mid) / max(sigma_km, 1.0e-6)) ** 2) for depth in depths]
+    total = max(sum(weights), 1.0e-12)
+    return [
+        (idx, sample_count, depth, weight / total, "p05_p50_p95_gaussian_depth_quadrature")
+        for idx, (depth, weight) in enumerate(zip(depths, weights, strict=False))
+    ]
 
 
 def _late_depth_ensemble(config: AppConfig, event_z_m: float, late_delay_s: float) -> tuple[float, float, float, float, list[float]]:
@@ -1165,6 +1218,8 @@ def build_waveform_array_projection(
             "depth_velocity_min_km_s": config.waveform_array.depth_velocity_min_km_s,
             "depth_velocity_max_km_s": config.waveform_array.depth_velocity_max_km_s,
             "depth_velocity_samples": config.waveform_array.depth_velocity_samples,
+            "depth_quadrature_samples": config.waveform_array.depth_quadrature_samples,
+            "depth_quadrature_min_width_km": config.waveform_array.depth_quadrature_min_width_km,
             "projection_refinement_enabled": config.waveform_array.projection_refinement_enabled,
             "projection_refinement_fraction": config.waveform_array.projection_refinement_fraction,
             "projection_refinement_steps": config.waveform_array.projection_refinement_steps,
@@ -1175,6 +1230,9 @@ def build_waveform_array_projection(
                 "depth_p05_km",
                 "depth_p50_km",
                 "depth_p95_km",
+                "depth_sample_center_km",
+                "depth_sample_weight",
+                "depth_quadrature_method",
                 "depth_uncertainty_method",
                 "projection_refinement_dx_m",
                 "projection_refinement_dy_m",
@@ -1198,7 +1256,7 @@ def build_waveform_array_projection(
             "primitive_type_counts": _count_values(splat_rows, "primitive_type"),
             "path_family_counts": _count_values(splat_rows, "path_family"),
             "splat_role_counts": _count_values(splat_rows, "splat_role"),
-            "depth_uncertainty_policy": "depth uncertainty is metadata by default; sigma_z_m uses resolution only unless waveform_array.use_depth_uncertainty_in_splat_sigma=true",
+            "depth_uncertainty_policy": "structure splats use deterministic p05-p50-p95 depth quadrature; sigma_z_m uses resolution unless waveform_array.use_depth_uncertainty_in_splat_sigma=true",
             "primitive_depth_metadata_columns": [
                 "depth_uncertainty_km",
                 "depth_uncertainty_z_m",
@@ -1206,6 +1264,9 @@ def build_waveform_array_projection(
                 "depth_p05_km",
                 "depth_p50_km",
                 "depth_p95_km",
+                "depth_sample_center_km",
+                "depth_sample_weight",
+                "depth_quadrature_method",
                 "depth_uncertainty_method",
                 "projection_refinement_dx_m",
                 "projection_refinement_dy_m",
@@ -1248,6 +1309,8 @@ def build_waveform_array_projection(
         "depth_velocity_min_km_s": config.waveform_array.depth_velocity_min_km_s,
         "depth_velocity_max_km_s": config.waveform_array.depth_velocity_max_km_s,
         "depth_velocity_samples": config.waveform_array.depth_velocity_samples,
+        "depth_quadrature_samples": config.waveform_array.depth_quadrature_samples,
+        "depth_quadrature_min_width_km": config.waveform_array.depth_quadrature_min_width_km,
         "projection_refinement_enabled": config.waveform_array.projection_refinement_enabled,
         "projection_refinement_fraction": config.waveform_array.projection_refinement_fraction,
         "projection_refinement_steps": config.waveform_array.projection_refinement_steps,
@@ -1264,7 +1327,7 @@ def build_waveform_array_projection(
             "projection_refinement_score_gain",
             "projection_refinement_method",
         ],
-        "depth_uncertainty_policy": "depth_p50_km is the projected center; p05-p95 preserves velocity/residual uncertainty; sigma_z_m uses resolution only by default so uncertainty does not blur the density field",
+        "depth_uncertainty_policy": "structure splats are expanded into weighted p05-p50-p95 depth quadrature samples; source anchors remain single catalog-depth diagnostics",
         "use_depth_uncertainty_in_splat_sigma": config.waveform_array.use_depth_uncertainty_in_splat_sigma,
         "uses_phase": config.waveform_array.use_phase,
         "uses_group_delay": config.waveform_array.use_group_delay,
@@ -1335,7 +1398,10 @@ def _build_splats(config: AppConfig, projection_rows: list[dict[str, Any]], is_s
     )
     rows = rows[: config.waveform_array.max_splats]
     splats: list[dict[str, Any]] = []
-    for idx, row in enumerate(rows, start=1):
+    splat_index = 0
+    for row in rows:
+        if len(splats) >= config.waveform_array.max_splats:
+            break
         structural_weight = clamp01(float(row.get("structural_weight", 1.0) or 0.0))
         depth_uncertainty_km = float(row.get("depth_uncertainty_km", 0.0) or 0.0)
         center_depth_km = float(row.get("depth_p50_km", float(row.get("projection_z_m", row.get("z_m", 0.0)) or 0.0) / 1000.0) or 0.0)
@@ -1353,10 +1419,20 @@ def _build_splats(config: AppConfig, projection_rows: list[dict[str, Any]], is_s
                 depth_uncertainty_km,
                 config.filters.max_depth_km,
             )
+        primitive_type = str(row.get("primitive_type", "direct") or "direct")
+        is_structure_candidate = bool(row.get("is_structure_candidate", True))
+        depth_samples = _depth_quadrature_points(
+            config,
+            depth_p05_km,
+            depth_p50_km,
+            depth_p95_km,
+            primitive_type,
+            is_structure_candidate,
+        )
+        peak_depth_weight = max((sample[3] for sample in depth_samples), default=1.0)
         raw_amplitude = clamp01(float(row.get("beam_energy", 0.0) or 0.0))
-        structure_amplitude = clamp01(raw_amplitude * structural_weight)
-        amplitude = raw_amplitude
-        array_coherence = clamp01(float(row.get("array_coherence", amplitude) or 0.0))
+        structure_amplitude_base = clamp01(raw_amplitude * structural_weight)
+        array_coherence = clamp01(float(row.get("array_coherence", raw_amplitude) or 0.0))
         sigma_xy = float(row.get("gaussian_splat_sigma_m", config.waveform_array.splat_sigma_horizontal_m) or 0.0)
         resolution_sigma_z_m = max(
             float(config.waveform_array.splat_sigma_vertical_m),
@@ -1368,76 +1444,88 @@ def _build_splats(config: AppConfig, projection_rows: list[dict[str, Any]], is_s
             if config.waveform_array.use_depth_uncertainty_in_splat_sigma
             else resolution_sigma_z_m
         )
-        primitive_type = str(row.get("primitive_type", "direct") or "direct")
-        color_r, color_g, color_b = _primitive_rgb(amplitude, primitive_type)
-        splats.append(
-            {
-                "primitive_id": f"gs_{idx:08d}",
-                "event_id": row.get("event_id", ""),
-                "time_utc": row.get("time_utc", ""),
-                "time_bin_index": row.get("time_bin_index", 0),
-                "x_m": row.get("projection_x_m", row.get("x_m", 0.0)),
-                "y_m": row.get("projection_y_m", row.get("y_m", 0.0)),
-                "z_m": row.get("projection_z_m", row.get("z_m", 0.0)),
-                "source_event_x_m": row.get("x_m", 0.0),
-                "source_event_y_m": row.get("y_m", 0.0),
-                "source_event_z_m": row.get("z_m", 0.0),
-                "primitive_type": primitive_type,
-                "path_family": row.get("path_family", "direct"),
-                "late_phase_delay_s": row.get("late_phase_delay_s", 0.0),
-                "late_phase_max_delay_s": row.get("late_phase_max_delay_s", config.waveform_array.late_phase_max_delay_s),
-                "late_delay_clipped": row.get("late_delay_clipped", False),
-                "depth_source": row.get("depth_source", "catalog_hypocenter" if primitive_type == "direct" else "late_phase_model"),
-                "depth_method": row.get("depth_method", "event_catalog_depth_fixed_to_direct_projection" if primitive_type == "direct" else "event_depth_plus_half_extra_path_homogeneous_velocity"),
-                "depth_artifact_risk": row.get("depth_artifact_risk", "catalog_depth_quantization_possible" if primitive_type == "direct" else "model_derived_depth"),
-                "depth_uncertainty_km": depth_uncertainty_km,
-                "depth_uncertainty_z_m": depth_uncertainty_z_m,
-                "depth_p05_km": depth_p05_km,
-                "depth_p50_km": depth_p50_km,
-                "depth_p95_km": depth_p95_km,
-                "depth_velocity_min_km_s": row.get("depth_velocity_min_km_s", config.waveform_array.depth_velocity_min_km_s),
-                "depth_velocity_max_km_s": row.get("depth_velocity_max_km_s", config.waveform_array.depth_velocity_max_km_s),
-                "depth_velocity_samples": row.get("depth_velocity_samples", config.waveform_array.depth_velocity_samples),
-                "depth_uncertainty_method": row.get("depth_uncertainty_method", "legacy_interval_from_depth_uncertainty"),
-                "projection_refinement_dx_m": row.get("projection_refinement_dx_m", 0.0),
-                "projection_refinement_dy_m": row.get("projection_refinement_dy_m", 0.0),
-                "projection_refinement_score_gain": row.get("projection_refinement_score_gain", 0.0),
-                "projection_refinement_method": row.get("projection_refinement_method", "coarse_grid_only"),
-                "structural_weight": structural_weight,
-                "projection_quality_flag": row.get("projection_quality_flag", "unknown"),
-                "projection_quality_score": row.get("projection_quality_score", structural_weight),
-                "is_structure_candidate": bool(row.get("is_structure_candidate", True)),
-                "splat_role": row.get("splat_role", "structure"),
-                "raw_amplitude": raw_amplitude,
-                "structure_amplitude": structure_amplitude,
-                "excess_path_km": row.get("excess_path_km", 0.0),
-                "residual_spread_s": row.get("residual_spread_s", 0.0),
-                "positive_residual_fraction": row.get("positive_residual_fraction", 0.0),
-                "scatter_weight": row.get("scatter_weight", 0.0),
-                "sigma_x_m": sigma_xy,
-                "sigma_y_m": sigma_xy,
-                "sigma_z_m": sigma_z,
-                "amplitude": amplitude,
-                "opacity": clamp01(0.10 + 0.60 * amplitude + 0.30 * array_coherence),
-                "phase_rad": row.get("phase_resultant_rad", 0.0),
-                "color_r": color_r,
-                "color_g": color_g,
-                "color_b": color_b,
-                "source_projection_rank": row.get("projection_rank", 0),
-                "source_frequency_hz": row.get("frequency_hz", 0.0),
-                "source_projection_method": row.get("projection_method", ""),
-                "array_coherence": array_coherence,
-                "beam_power": row.get("beam_power", 0.0),
-                "aperture_km": row.get("aperture_km", 0.0),
-                "frequency_band": row.get("frequency_band", ""),
-                "velocity_model": row.get("velocity_model", ""),
-                "slowness_x_s_per_km": row.get("slowness_x_s_per_km", 0.0),
-                "slowness_y_s_per_km": row.get("slowness_y_s_per_km", 0.0),
-                "dominant_source": row.get("dominant_source", "unknown"),
-                "interpretation": "relative coherent-energy Gaussian primitive; not a claim of rupture timing or unique structure",
-                "is_sample_data": is_sample,
-            }
-        )
+        color_r, color_g, color_b = _primitive_rgb(raw_amplitude, primitive_type)
+        for depth_sample_index, depth_sample_count, depth_sample_km, depth_sample_weight, depth_method in depth_samples:
+            if len(splats) >= config.waveform_array.max_splats:
+                break
+            splat_index += 1
+            display_weight = 0.45 + 0.55 * (depth_sample_weight / max(peak_depth_weight, 1.0e-12))
+            structure_amplitude = clamp01(structure_amplitude_base * depth_sample_weight)
+            display_amplitude = clamp01(raw_amplitude * display_weight)
+            base_opacity = clamp01(0.10 + 0.60 * raw_amplitude + 0.30 * array_coherence)
+            splats.append(
+                {
+                    "primitive_id": f"gs_{splat_index:08d}",
+                    "event_id": row.get("event_id", ""),
+                    "time_utc": row.get("time_utc", ""),
+                    "time_bin_index": row.get("time_bin_index", 0),
+                    "x_m": row.get("projection_x_m", row.get("x_m", 0.0)),
+                    "y_m": row.get("projection_y_m", row.get("y_m", 0.0)),
+                    "z_m": depth_sample_km * 1000.0,
+                    "source_event_x_m": row.get("x_m", 0.0),
+                    "source_event_y_m": row.get("y_m", 0.0),
+                    "source_event_z_m": row.get("z_m", 0.0),
+                    "primitive_type": primitive_type,
+                    "path_family": row.get("path_family", "direct"),
+                    "late_phase_delay_s": row.get("late_phase_delay_s", 0.0),
+                    "late_phase_max_delay_s": row.get("late_phase_max_delay_s", config.waveform_array.late_phase_max_delay_s),
+                    "late_delay_clipped": row.get("late_delay_clipped", False),
+                    "depth_source": row.get("depth_source", "catalog_hypocenter" if primitive_type == "direct" else "late_phase_model"),
+                    "depth_method": row.get("depth_method", "event_catalog_depth_fixed_to_direct_projection" if primitive_type == "direct" else "event_depth_plus_half_extra_path_homogeneous_velocity"),
+                    "depth_artifact_risk": row.get("depth_artifact_risk", "catalog_depth_quantization_possible" if primitive_type == "direct" else "model_derived_depth"),
+                    "depth_uncertainty_km": depth_uncertainty_km,
+                    "depth_uncertainty_z_m": depth_uncertainty_z_m,
+                    "depth_p05_km": depth_p05_km,
+                    "depth_p50_km": depth_p50_km,
+                    "depth_p95_km": depth_p95_km,
+                    "depth_sample_center_km": depth_sample_km,
+                    "depth_sample_index": depth_sample_index,
+                    "depth_sample_count": depth_sample_count,
+                    "depth_sample_weight": depth_sample_weight,
+                    "depth_quadrature_method": depth_method,
+                    "depth_velocity_min_km_s": row.get("depth_velocity_min_km_s", config.waveform_array.depth_velocity_min_km_s),
+                    "depth_velocity_max_km_s": row.get("depth_velocity_max_km_s", config.waveform_array.depth_velocity_max_km_s),
+                    "depth_velocity_samples": row.get("depth_velocity_samples", config.waveform_array.depth_velocity_samples),
+                    "depth_uncertainty_method": row.get("depth_uncertainty_method", "legacy_interval_from_depth_uncertainty"),
+                    "projection_refinement_dx_m": row.get("projection_refinement_dx_m", 0.0),
+                    "projection_refinement_dy_m": row.get("projection_refinement_dy_m", 0.0),
+                    "projection_refinement_score_gain": row.get("projection_refinement_score_gain", 0.0),
+                    "projection_refinement_method": row.get("projection_refinement_method", "coarse_grid_only"),
+                    "structural_weight": structural_weight,
+                    "projection_quality_flag": row.get("projection_quality_flag", "unknown"),
+                    "projection_quality_score": row.get("projection_quality_score", structural_weight),
+                    "is_structure_candidate": is_structure_candidate,
+                    "splat_role": row.get("splat_role", "structure"),
+                    "raw_amplitude": raw_amplitude,
+                    "structure_amplitude": structure_amplitude,
+                    "excess_path_km": row.get("excess_path_km", 0.0),
+                    "residual_spread_s": row.get("residual_spread_s", 0.0),
+                    "positive_residual_fraction": row.get("positive_residual_fraction", 0.0),
+                    "scatter_weight": row.get("scatter_weight", 0.0),
+                    "sigma_x_m": sigma_xy,
+                    "sigma_y_m": sigma_xy,
+                    "sigma_z_m": sigma_z,
+                    "amplitude": display_amplitude,
+                    "opacity": clamp01(base_opacity * display_weight),
+                    "phase_rad": row.get("phase_resultant_rad", 0.0),
+                    "color_r": color_r,
+                    "color_g": color_g,
+                    "color_b": color_b,
+                    "source_projection_rank": row.get("projection_rank", 0),
+                    "source_frequency_hz": row.get("frequency_hz", 0.0),
+                    "source_projection_method": row.get("projection_method", ""),
+                    "array_coherence": array_coherence,
+                    "beam_power": row.get("beam_power", 0.0),
+                    "aperture_km": row.get("aperture_km", 0.0),
+                    "frequency_band": row.get("frequency_band", ""),
+                    "velocity_model": row.get("velocity_model", ""),
+                    "slowness_x_s_per_km": row.get("slowness_x_s_per_km", 0.0),
+                    "slowness_y_s_per_km": row.get("slowness_y_s_per_km", 0.0),
+                    "dominant_source": row.get("dominant_source", "unknown"),
+                    "interpretation": "relative coherent-energy Gaussian primitive; not a claim of rupture timing or unique structure",
+                    "is_sample_data": is_sample,
+                }
+            )
     return splats
 
 

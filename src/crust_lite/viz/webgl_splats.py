@@ -33,6 +33,10 @@ def _type_code(value: str) -> int:
     return {"direct": 0, "reflected": 1, "scattered": 2, "residual": 3}.get(value, 3)
 
 
+def _role_code(value: str) -> int:
+    return {"source_anchor": 0, "structure": 1, "diagnostic_rejected": 2}.get(value, 3)
+
+
 def _boolish(value: Any) -> bool:
     if isinstance(value, bool):
         return value
@@ -91,9 +95,9 @@ def _finite_float(value: Any) -> float | None:
 
 
 def _depth_center_m(row: dict[str, Any]) -> float:
-    p50_km = _finite_float(row.get("depth_p50_km"))
-    if p50_km is not None:
-        return p50_km * 1000.0
+    sample_km = _finite_float(row.get("depth_sample_center_km"))
+    if sample_km is not None:
+        return sample_km * 1000.0
     return float(row.get("z_m", 0.0) or 0.0)
 
 
@@ -223,6 +227,42 @@ def _depth_diagnostics(config: AppConfig, rows: list[dict[str, Any]]) -> dict[st
         "top_source_depth_bins_1km": _top_depth_bins(rows, "source_event_z_m", 1.0),
         "uncertainty": _depth_uncertainty_summary(rows),
         "interpretation": "Layer-like bands should be read through the computational depth uncertainty model, not as display smoothing artifacts. Catalog-depth quantization, late-delay window clipping, velocity-range sampling, and projection refinement are retained as diagnostic metadata so apparent layers can be checked against the p05-p95 interval and independent velocity/plate constraints.",
+    }
+
+
+def _integer_depth_fraction(rows: list[dict[str, Any]]) -> float:
+    if not rows:
+        return 0.0
+    count = 0
+    for row in rows:
+        depth_m = _depth_center_m(row)
+        if _is_integer_km_depth(depth_m):
+            count += 1
+    return round(count / len(rows), 6)
+
+
+def _dominant_depth_bin_fraction(rows: list[dict[str, Any]], bin_km: float = 1.0) -> float:
+    if not rows:
+        return 0.0
+    counts: dict[float, int] = {}
+    for row in rows:
+        depth_km = _depth_center_m(row) / 1000.0
+        binned = round(round(depth_km / bin_km) * bin_km, 3)
+        counts[binned] = counts.get(binned, 0) + 1
+    return round(max(counts.values()) / len(rows), 6)
+
+
+def _layer_artifact_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    structure = [row for row in rows if str(row.get("splat_role", "")) == "structure"]
+    diagnostics = [row for row in rows if str(row.get("splat_role", "")) != "structure"]
+    return {
+        "all_integer_depth_fraction": _integer_depth_fraction(rows),
+        "structure_integer_depth_fraction": _integer_depth_fraction(structure),
+        "diagnostic_integer_depth_fraction": _integer_depth_fraction(diagnostics),
+        "all_dominant_1km_bin_fraction": _dominant_depth_bin_fraction(rows),
+        "structure_dominant_1km_bin_fraction": _dominant_depth_bin_fraction(structure),
+        "diagnostic_dominant_1km_bin_fraction": _dominant_depth_bin_fraction(diagnostics),
+        "interpretation": "High diagnostic fractions indicate catalog-depth anchors or rejected clipped late phases rather than imaged structure. Structure metrics use depth quadrature samples when present.",
     }
 
 
@@ -386,6 +426,7 @@ def _splat_payload(config: AppConfig, rows: list[dict[str, Any]]) -> dict[str, A
     opacities: list[float] = []
     types: list[float] = []
     depth_flags: list[float] = []
+    roles: list[float] = []
     amplitudes: list[float] = []
     depth_centers_km: list[float] = []
     depth_p05_km: list[float | None] = []
@@ -423,6 +464,7 @@ def _splat_payload(config: AppConfig, rows: list[dict[str, Any]]) -> dict[str, A
         primitive_type = str(row.get("primitive_type", "direct") or "direct")
         types.append(float(_type_code(primitive_type)))
         depth_flags.append(float(_depth_flag_code(row, max_delay_s)))
+        roles.append(float(_role_code(str(row.get("splat_role", "structure") or "structure"))))
         amplitudes.append(_round(float(row.get("amplitude", 0.0) or 0.0), 5))
         depth_centers_km.append(_round(depth_center_m / 1000.0, 6))
         p05 = _finite_float(row.get("depth_p05_km"))
@@ -450,6 +492,7 @@ def _splat_payload(config: AppConfig, rows: list[dict[str, Any]]) -> dict[str, A
         "opacities": opacities,
         "types": types,
         "depth_flags": depth_flags,
+        "roles": roles,
         "amplitudes": amplitudes,
         "depth_centers_km": depth_centers_km,
         "depth_p05_km": depth_p05_km,
@@ -526,7 +569,12 @@ def _webgl_html(payload: dict[str, Any]) -> str:
     <label><input type="checkbox" data-depth-flag="3" checked>late model depth</label>
   </div>
   <div>depth diagnostics: amber=catalog-rounded direct, red=delay-window clipped, cyan=late model-derived.</div>
-  <div>depth uncertainty: z uses median/center depth; p05-p95 stays metadata and no longer enlarges point size.</div>
+  <div>depth uncertainty: structure splats use p05-p50-p95 quadrature samples; source anchors remain diagnostics.</div>
+  <div>
+    <label><input type="checkbox" data-role="0">source anchors</label>
+    <label><input type="checkbox" data-role="1" checked>structure</label>
+    <label><input type="checkbox" data-role="2">rejected diagnostics</label>
+  </div>
   <div>
     <label><input type="checkbox" data-type="0" checked>direct</label>
     <label><input type="checkbox" data-type="1" checked>reflected</label>
@@ -575,20 +623,20 @@ function program(vs, fs) {{
 }}
 const splatVS = `#version 300 es
 precision highp float;
-in vec3 a_pos; in vec3 a_color; in float a_size; in float a_opacity; in float a_type; in float a_depthFlag;
+in vec3 a_pos; in vec3 a_color; in float a_size; in float a_opacity; in float a_type; in float a_depthFlag; in float a_role;
 uniform mat4 u_mvp; uniform float u_pointScale;
-out vec3 v_color; out float v_opacity; out float v_type; out float v_depthFlag;
+out vec3 v_color; out float v_opacity; out float v_type; out float v_depthFlag; out float v_role;
 void main() {{
   vec4 clip = u_mvp * vec4(a_pos, 1.0);
   gl_Position = clip;
   float perspectiveScale = clamp(1.0 / max(0.25, clip.w), 0.35, 3.0);
   gl_PointSize = clamp(a_size * u_pointScale * perspectiveScale, 2.0, 384.0);
-  v_color = a_color; v_opacity = a_opacity; v_type = a_type; v_depthFlag = a_depthFlag;
+  v_color = a_color; v_opacity = a_opacity; v_type = a_type; v_depthFlag = a_depthFlag; v_role = a_role;
 }}`;
 const splatFS = `#version 300 es
 precision highp float;
-in vec3 v_color; in float v_opacity; in float v_type; in float v_depthFlag;
-uniform vec4 u_visible; uniform vec4 u_depthFlagVisible; uniform float u_opacityScale; uniform int u_colorMode;
+in vec3 v_color; in float v_opacity; in float v_type; in float v_depthFlag; in float v_role;
+uniform vec4 u_visible; uniform vec4 u_depthFlagVisible; uniform vec4 u_roleVisible; uniform float u_opacityScale; uniform int u_colorMode;
 out vec4 outColor;
 vec3 pathTypeColor(float t) {{
   if (t < 0.5) return vec3(0.30, 0.72, 1.00);
@@ -605,7 +653,8 @@ vec3 depthFlagColor(float f) {{
 void main() {{
   float vis = v_type < 0.5 ? u_visible.x : (v_type < 1.5 ? u_visible.y : (v_type < 2.5 ? u_visible.z : u_visible.w));
   float depthVis = v_depthFlag < 0.5 ? u_depthFlagVisible.x : (v_depthFlag < 1.5 ? u_depthFlagVisible.y : (v_depthFlag < 2.5 ? u_depthFlagVisible.z : u_depthFlagVisible.w));
-  if (vis < 0.5 || depthVis < 0.5) discard;
+  float roleVis = v_role < 0.5 ? u_roleVisible.x : (v_role < 1.5 ? u_roleVisible.y : (v_role < 2.5 ? u_roleVisible.z : u_roleVisible.w));
+  if (vis < 0.5 || depthVis < 0.5 || roleVis < 0.5) discard;
   vec2 uv = gl_PointCoord * 2.0 - 1.0;
   float r2 = dot(uv, uv);
   if (r2 > 1.0) discard;
@@ -660,6 +709,7 @@ const splat = {{
   opacity: buf(new Float32Array(payload.splats.opacities)),
   type: buf(new Float32Array(payload.splats.types)),
   depthFlag: buf(new Float32Array(payload.splats.depth_flags)),
+  role: buf(new Float32Array(payload.splats.roles)),
 }};
 const terrain = {{
   n: payload.terrain.indices.length,
@@ -699,7 +749,7 @@ function lookAt(eye, target, up) {{
   return o;
 }}
 let yaw=0.72, pitch=0.46, dist=3.2, pan=[0,0,0];
-let visible=[1,1,1,1], depthVisible=[1,1,1,1], showTerrain=false, showOutlines=true, showPlateBoundaries=Boolean(payload.tectonics.default_show), showPlateInterfaces=Boolean(payload.tectonics.default_show), showLines=false, splatScale=1.45, opacityScale=1.0, colorMode=0;
+let visible=[1,1,1,1], depthVisible=[1,1,1,1], roleVisible=[0,1,0,1], showTerrain=false, showOutlines=true, showPlateBoundaries=Boolean(payload.tectonics.default_show), showPlateInterfaces=Boolean(payload.tectonics.default_show), showLines=false, splatScale=1.45, opacityScale=1.0, colorMode=0;
 const pointers = new Map();
 let lastCentroid = null, lastPinchDistance = 0, lastPointer = null, panning = false;
 function mvp() {{
@@ -761,7 +811,8 @@ function render() {{
   gl.uniform1i(gl.getUniformLocation(splatProg,'u_colorMode'), colorMode);
   gl.uniform4f(gl.getUniformLocation(splatProg,'u_visible'), visible[0], visible[1], visible[2], visible[3]);
   gl.uniform4f(gl.getUniformLocation(splatProg,'u_depthFlagVisible'), depthVisible[0], depthVisible[1], depthVisible[2], depthVisible[3]);
-  attrib(splatProg,'a_pos',splat.pos,3); attrib(splatProg,'a_color',splat.color,3); attrib(splatProg,'a_size',splat.size,1); attrib(splatProg,'a_opacity',splat.opacity,1); attrib(splatProg,'a_type',splat.type,1); attrib(splatProg,'a_depthFlag',splat.depthFlag,1);
+  gl.uniform4f(gl.getUniformLocation(splatProg,'u_roleVisible'), roleVisible[0], roleVisible[1], roleVisible[2], roleVisible[3]);
+  attrib(splatProg,'a_pos',splat.pos,3); attrib(splatProg,'a_color',splat.color,3); attrib(splatProg,'a_size',splat.size,1); attrib(splatProg,'a_opacity',splat.opacity,1); attrib(splatProg,'a_type',splat.type,1); attrib(splatProg,'a_depthFlag',splat.depthFlag,1); attrib(splatProg,'a_role',splat.role,1);
   gl.drawArrays(gl.POINTS,0,splat.n); gl.depthMask(true);
 }}
 canvas.addEventListener('pointerdown', e => {{
@@ -808,6 +859,7 @@ canvas.addEventListener('lostpointercapture', endPointer);
 canvas.addEventListener('wheel', e => {{ e.preventDefault(); dist=Math.max(0.55,Math.min(12,dist*Math.exp(e.deltaY*0.001))); render(); }}, {{passive:false}});
 document.querySelectorAll('input[data-type]').forEach(el => el.addEventListener('change', e => {{ visible[Number(e.target.dataset.type)] = e.target.checked ? 1 : 0; render(); }}));
 document.querySelectorAll('input[data-depth-flag]').forEach(el => el.addEventListener('change', e => {{ depthVisible[Number(e.target.dataset.depthFlag)] = e.target.checked ? 1 : 0; render(); }}));
+document.querySelectorAll('input[data-role]').forEach(el => el.addEventListener('change', e => {{ roleVisible[Number(e.target.dataset.role)] = e.target.checked ? 1 : 0; render(); }}));
 document.getElementById('colorMode').addEventListener('change', e => {{ colorMode=Number(e.target.value); render(); }});
 document.getElementById('outlineToggle').addEventListener('change', e => {{ showOutlines=e.target.checked; render(); }});
 document.getElementById('plateBoundaryToggle').checked = showPlateBoundaries;
@@ -835,7 +887,7 @@ def write_webgl_splat_preview(config: AppConfig, paths: ProjectPaths, rows: list
         "html": str(paths.outputs_3d / "array_projection_splats.html"),
         "renderer": "webgl2_gaussian_point_sprite",
         "gaussian_shader": "fragment_alpha=opacity*exp(-3.25*r2)",
-        "visual_resolution_policy": "point sprite size uses horizontal resolution only; depth uncertainty is metadata and does not blur the WebGL splat by default",
+        "visual_resolution_policy": "point sprite size uses horizontal resolution only; structure depth uncertainty is represented by weighted quadrature samples rather than display blur",
         "displayed_splats": len(limit_rows),
         "total_splats": len(rows),
         "line_segments": splats["line_segments"],
@@ -845,8 +897,8 @@ def write_webgl_splat_preview(config: AppConfig, paths: ProjectPaths, rows: list
         "splat_color_note": "Default grayscale encodes relative amplitude. Path-type colors and depth diagnostics are optional overlays, not intensity.",
         "depth_quality_handling": {
             "display_filtering_default": "none",
-            "z_display_policy": "The plotted z coordinate is the computational depth center: depth_p50_km when available, otherwise legacy z_m. The p05-p95 interval is preserved in metadata and does not enlarge point sprites by default.",
-            "computation_policy": "All splat candidates are retained by default. Direct-wave catalog-depth anchors, clipped late-delay candidates, velocity-sampling ranges, and projection-refinement offsets are represented as computational uncertainty/diagnostic metadata. Downstream structure density uses structure_amplitude and resolution sigma_z_m; depth uncertainty does not blur density unless explicitly enabled.",
+            "z_display_policy": "The plotted z coordinate is depth_sample_center_km for quadrature splats, otherwise z_m. p05-p50-p95 remains available for uncertainty diagnostics.",
+            "computation_policy": "Structure candidates are expanded into weighted depth quadrature samples. Direct-wave catalog-depth anchors and clipped late-delay candidates are retained as diagnostics but are separated from the default structure view.",
         },
         "depth_diagnostics": depth_diagnostics,
         "is_sample_data": is_sample,
@@ -858,6 +910,10 @@ def write_webgl_splat_preview(config: AppConfig, paths: ProjectPaths, rows: list
         "path_family_counts": _count_values(rows, "path_family"),
         "splat_role_counts": _count_existing_values(rows, "splat_role"),
         "displayed_splat_role_counts": _count_existing_values(limit_rows, "splat_role"),
+        "default_visible_splat_roles": ["structure"],
+        "depth_quadrature_samples": config.waveform_array.depth_quadrature_samples,
+        "depth_quadrature_min_width_km": config.waveform_array.depth_quadrature_min_width_km,
+        "layer_artifact_metrics": _layer_artifact_metrics(limit_rows),
         "terrain_overlay": "disabled_surface_outline_only",
         "terrain_grid": {"nx": terrain["nx"], "ny": terrain["ny"]},
         "canvas_device_pixel_ratio_max": 4,

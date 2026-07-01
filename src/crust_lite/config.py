@@ -91,6 +91,8 @@ class WaveformArrayConfig:
     scattered_depth_weight: float = 0.75
     residual_depth_weight: float = 0.35
     use_depth_uncertainty_in_splat_sigma: bool = False
+    depth_quadrature_samples: int = 3
+    depth_quadrature_min_width_km: float = 0.5
     top_projections_per_event: int = 4
     max_projection_rows: int = 100_000
     splat_sigma_horizontal_m: float = 20_000.0
@@ -320,6 +322,10 @@ def parse_config(raw: dict[str, Any]) -> AppConfig:
         raise ValueError("waveform_array.late_phase_max_delay_s must be positive")
     if waveform_array.catalog_integer_depth_uncertainty_km <= 0:
         raise ValueError("waveform_array.catalog_integer_depth_uncertainty_km must be positive")
+    if waveform_array.depth_quadrature_samples <= 0:
+        raise ValueError("waveform_array.depth_quadrature_samples must be positive")
+    if waveform_array.depth_quadrature_min_width_km < 0:
+        raise ValueError("waveform_array.depth_quadrature_min_width_km must be non-negative")
     for weight_name in (
         "catalog_integer_depth_weight",
         "direct_depth_weight",
