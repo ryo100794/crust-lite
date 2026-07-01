@@ -2,18 +2,39 @@ from __future__ import annotations
 
 import json
 import math
+import os
 from typing import Any
 
 import numpy as np
 
 from crust_lite.config import AppConfig
 from crust_lite.geo import LocalProjector, fault_rectangle_vertices
+from crust_lite.io.database import effective_memory_limit_bytes
 from crust_lite.io.geopackage import read_features
 from crust_lite.io.parquet import write_table
 from crust_lite.paths import ProjectPaths
 from crust_lite.viz.japan_outline import JapanOutline, local_context_outlines
 from crust_lite.viz.tectonics import TectonicLine, tectonic_context_from_config
 
+
+def _webgl_splat_limit(total_rows: int) -> int:
+    raw = os.environ.get("CRUST_LITE_WEBGL_MAX_SPLATS")
+    if raw:
+        try:
+            return max(1, min(total_rows, int(raw)))
+        except ValueError:
+            pass
+    limit = effective_memory_limit_bytes()
+    if not limit:
+        return min(total_rows, 250_000)
+    gib = limit / (1024**3)
+    if gib <= 8:
+        cap = 100_000
+    elif gib <= 16:
+        cap = 180_000
+    else:
+        cap = 250_000
+    return min(total_rows, cap)
 
 def _count_values(rows: list[dict[str, Any]], key: str) -> dict[str, int]:
     counts: dict[str, int] = {}
@@ -573,13 +594,36 @@ def _faults_payload(config: AppConfig, paths: ProjectPaths, rows: list[dict[str,
     regional_features = [feature for feature in features if not _is_regional_sheet_fault(feature)]
     display_features = regional_features or features
     if len(display_features) > config.visualization_3d.max_fault_segments:
-        display_features = sorted(
-            display_features,
+        known_display = [
+            feature
+            for feature in display_features
+            if not _fault_is_inferred(feature.get("properties", {}))
+        ]
+        inferred_display = [
+            feature
+            for feature in display_features
+            if _fault_is_inferred(feature.get("properties", {}))
+        ]
+        known_display = sorted(
+            known_display,
+            key=lambda feature: _safe_float(feature.get("properties", {}).get("confidence", 0.0)),
+            reverse=True,
+        )
+        inferred_display = sorted(
+            inferred_display,
             key=lambda feature: _safe_float(
-                feature.get("properties", {}).get("fault_score", feature.get("properties", {}).get("confidence", 0.0))
+                feature.get("properties", {}).get(
+                    "fault_score",
+                    feature.get("properties", {}).get("confidence", 0.0),
+                )
             ),
             reverse=True,
-        )[: config.visualization_3d.max_fault_segments]
+        )
+        max_faults = max(1, int(config.visualization_3d.max_fault_segments))
+        if len(known_display) >= max_faults:
+            display_features = known_display[:max_faults]
+        else:
+            display_features = [*known_display, *inferred_display[: max_faults - len(known_display)]]
     interaction = _fault_wave_interaction_rows(config, display_features, rows)
     interaction_by_id = {row["segment_id"]: row for row in interaction}
     if interaction:
@@ -1186,7 +1230,7 @@ addEventListener('resize', resize); resize();
 
 def write_webgl_splat_preview(config: AppConfig, paths: ProjectPaths, rows: list[dict[str, Any]], is_sample: bool) -> None:
     paths.outputs_3d.mkdir(parents=True, exist_ok=True)
-    limit_rows = rows[: min(len(rows), 250_000)]
+    limit_rows = rows[: _webgl_splat_limit(len(rows))]
     splats = _splat_payload(config, limit_rows)
     depth_diagnostics = _depth_diagnostics(config, limit_rows)
     terrain = _terrain_payload(config, is_sample=is_sample)
@@ -1198,6 +1242,7 @@ def write_webgl_splat_preview(config: AppConfig, paths: ProjectPaths, rows: list
         "gaussian_shader": "fragment_alpha=opacity*exp(-3.25*r2)",
         "visual_resolution_policy": "point sprite size uses horizontal resolution only; structure depth uncertainty is represented by weighted quadrature samples rather than display blur",
         "displayed_splats": len(limit_rows),
+        "display_splat_limit_policy": "cgroup_memory_aware_env_CRUST_LITE_WEBGL_MAX_SPLATS",
         "total_splats": len(rows),
         "line_segments": splats["line_segments"],
         "source_projection_guides_default_visible": False,

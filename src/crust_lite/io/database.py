@@ -73,6 +73,79 @@ def database_available() -> bool:
     return True
 
 
+def cgroup_memory_limit_bytes() -> int | None:
+    """Return the container memory limit when cgroup exposes one."""
+    candidates = [
+        Path("/sys/fs/cgroup/memory.max"),
+        Path("/sys/fs/cgroup/memory/memory.limit_in_bytes"),
+    ]
+    values: list[int] = []
+    for path in candidates:
+        try:
+            raw = path.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        if not raw or raw == "max":
+            continue
+        try:
+            value = int(raw)
+        except ValueError:
+            continue
+        if 0 < value < 1 << 60:
+            values.append(value)
+    return min(values) if values else None
+
+
+def _physical_memory_bytes() -> int | None:
+    try:
+        pages = os.sysconf("SC_PHYS_PAGES")
+        page_size = os.sysconf("SC_PAGE_SIZE")
+    except (OSError, ValueError):
+        return None
+    if not isinstance(pages, int) or not isinstance(page_size, int):
+        return None
+    return pages * page_size
+
+
+def effective_memory_limit_bytes() -> int | None:
+    """Best effort memory budget visible to this process."""
+    values = [value for value in (cgroup_memory_limit_bytes(), _physical_memory_bytes()) if value]
+    return min(values) if values else None
+
+
+def _format_duckdb_memory_limit(limit_bytes: int) -> str:
+    gib = max(1, int(limit_bytes / (1024**3)))
+    return f"{gib}GB"
+
+
+def duckdb_memory_limit() -> str | None:
+    explicit = os.environ.get("CRUST_LITE_DUCKDB_MEMORY_LIMIT")
+    if explicit:
+        return explicit
+    limit = effective_memory_limit_bytes()
+    if not limit:
+        return None
+    fraction_raw = os.environ.get("CRUST_LITE_DUCKDB_MEMORY_FRACTION", "0.45")
+    try:
+        fraction = min(0.8, max(0.1, float(fraction_raw)))
+    except ValueError:
+        fraction = 0.45
+    return _format_duckdb_memory_limit(int(limit * fraction))
+
+
+def _thread_cap_for_memory(limit: int | None) -> int:
+    if not limit:
+        return max(1, os.cpu_count() or 1)
+    gib = limit / (1024**3)
+    if gib <= 8:
+        return 2
+    if gib <= 16:
+        return 4
+    if gib <= 32:
+        return 8
+    return max(1, os.cpu_count() or 1)
+
+
 def _duckdb_thread_count() -> int:
     for name in ("CRUST_LITE_DUCKDB_THREADS", "CRUST_LITE_CPU_THREADS"):
         raw = os.environ.get(name)
@@ -81,7 +154,7 @@ def _duckdb_thread_count() -> int:
                 return max(1, int(raw))
             except ValueError:
                 pass
-    return max(1, os.cpu_count() or 1)
+    return max(1, min(os.cpu_count() or 1, _thread_cap_for_memory(effective_memory_limit_bytes())))
 
 
 def connect(paths: ProjectPaths) -> Any:
@@ -92,7 +165,7 @@ def connect(paths: ProjectPaths) -> Any:
 
         con = duckdb.connect(str(duckdb_database_path(paths)))
         con.execute(f"PRAGMA threads={_duckdb_thread_count()}")
-        memory_limit = os.environ.get("CRUST_LITE_DUCKDB_MEMORY_LIMIT")
+        memory_limit = duckdb_memory_limit()
         if memory_limit:
             con.execute(f"PRAGMA memory_limit='{memory_limit}'")
         return con

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import os
 from collections import defaultdict, deque
 from typing import Any
 
@@ -21,6 +22,35 @@ from crust_lite.paths import ProjectPaths
 from crust_lite.processing.scoring import confidence_from_score, fault_score
 
 LOGGER = get_logger(__name__)
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_int(name: str, default: int, min_value: int, max_value: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return max(min_value, min(max_value, int(raw)))
+    except ValueError:
+        LOGGER.warning("Ignoring invalid integer environment value %s=%r", name, raw)
+        return default
+
+
+def _env_float(name: str, default: float, min_value: float, max_value: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return max(min_value, min(max_value, float(raw)))
+    except ValueError:
+        LOGGER.warning("Ignoring invalid float environment value %s=%r", name, raw)
+        return default
 
 
 def _cluster_points(points: np.ndarray, eps_m: float, min_samples: int) -> np.ndarray:
@@ -78,9 +108,14 @@ def _tile_cluster_points(
     tile_m: float,
     depth_bin_m: float,
     min_samples: int,
+    offset_xy_m: tuple[float, float] = (0.0, 0.0),
 ) -> np.ndarray:
-    """Split broad connected seismicity into local search tiles."""
-    origin = np.min(points, axis=0)
+    """Split broad connected seismicity into local search tiles.
+
+    The offset pass intentionally repeats the search on shifted grids so narrow
+    event alignments that fall across a tile boundary are still tested by PCA.
+    """
+    origin = np.min(points, axis=0) - np.array([offset_xy_m[0], offset_xy_m[1], 0.0])
     labels = np.full(len(points), -1, dtype=int)
     bins: dict[tuple[int, int, int], list[int]] = defaultdict(list)
     for idx, point in enumerate(points):
@@ -97,6 +132,167 @@ def _tile_cluster_points(
         labels[np.array(indices, dtype=int)] = cluster_id
         cluster_id += 1
     return labels
+
+
+def _labels_to_cluster_sets(
+    labels: np.ndarray,
+    method: str,
+    min_events: int,
+) -> list[tuple[str, list[int], str]]:
+    clusters: dict[int, list[int]] = defaultdict(list)
+    for idx, label in enumerate(labels):
+        label_int = int(label)
+        if label_int >= 0:
+            clusters[label_int].append(idx)
+    return [
+        (f"{method}_{cluster_id:04d}", indices, method)
+        for cluster_id, indices in clusters.items()
+        if len(indices) >= min_events
+    ]
+
+
+def _candidate_cluster_sets(points: np.ndarray, eps_m: float) -> list[tuple[str, list[int], str]]:
+    """Return global and local candidate event groups for PCA fault fitting.
+
+    A national or whole-region catalog often forms one connected DBSCAN cloud.
+    Running PCA on that cloud suppresses local active-fault-scale alignments, so
+    the MVP combines a global DBSCAN pass with overlapping local search tiles.
+    The candidates are deduplicated after scoring.
+    """
+    min_events = 4
+    candidates: list[tuple[str, list[int], str]] = []
+    global_labels = _cluster_points(points, eps_m=eps_m, min_samples=min_events)
+    candidates.extend(_labels_to_cluster_sets(global_labels, "global_dbscan", min_events))
+
+    if len(points) < 200:
+        return candidates
+
+    tile_specs = [
+        (80_000.0, 15_000.0, 5, "local80_depth15"),
+        (50_000.0, 10_000.0, 5, "local50_depth10"),
+        (30_000.0, 8_000.0, 4, "local30_depth8"),
+    ]
+    if _env_bool("CRUST_LITE_FAULT_HIGH_RES", True):
+        tile_specs.extend(
+            [
+                (20_000.0, 6_000.0, 4, "local20_depth6"),
+                (15_000.0, 5_000.0, 4, "local15_depth5"),
+            ]
+        )
+    for tile_m, depth_bin_m, tile_min_events, name in tile_specs:
+        offsets = [
+            (0.0, 0.0),
+            (tile_m / 2.0, tile_m / 2.0),
+            (tile_m / 2.0, 0.0),
+            (0.0, tile_m / 2.0),
+        ]
+        for offset_idx, offset in enumerate(offsets):
+            labels = _tile_cluster_points(
+                points,
+                tile_m=tile_m,
+                depth_bin_m=depth_bin_m,
+                min_samples=tile_min_events,
+                offset_xy_m=offset,
+            )
+            candidates.extend(
+                _labels_to_cluster_sets(labels, f"{name}_offset{offset_idx}", tile_min_events)
+            )
+    return candidates
+
+
+def _strike_difference_deg(a: float, b: float) -> float:
+    diff = abs((a - b + 180.0) % 360.0 - 180.0)
+    return min(diff, abs(diff - 180.0))
+
+
+def _is_regional_sheet(props: dict[str, Any]) -> bool:
+    return float(props.get("length_km", 0.0)) > 800.0 or float(props.get("width_km", 0.0)) > 300.0
+
+
+def _dedupe_fault_features(
+    features: list[dict[str, Any]],
+    max_features: int = 300,
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """Keep the highest-scoring local candidates while removing near duplicates."""
+    stats = {
+        "raw_candidate_count": len(features),
+        "regional_sheet_removed_count": 0,
+        "duplicate_removed_count": 0,
+    }
+    if not features:
+        return [], stats
+
+    local_features = []
+    regional_features = []
+    for feature in features:
+        props = feature.get("properties", {})
+        if _is_regional_sheet(props):
+            regional_features.append(feature)
+        else:
+            local_features.append(feature)
+    if local_features:
+        features = local_features
+        stats["regional_sheet_removed_count"] = len(regional_features)
+
+    def rank(feature: dict[str, Any]) -> tuple[float, float, float]:
+        props = feature.get("properties", {})
+        return (
+            float(props.get("fault_score", 0.0)),
+            float(props.get("seismicity_planarity_score", 0.0)),
+            float(props.get("n_events", 0.0)),
+        )
+
+    distance_threshold_km = _env_float("CRUST_LITE_FAULT_DEDUPE_DISTANCE_KM", 6.0, 1.0, 50.0)
+    depth_threshold_km = _env_float("CRUST_LITE_FAULT_DEDUPE_DEPTH_KM", 5.0, 1.0, 30.0)
+    strike_threshold_deg = _env_float("CRUST_LITE_FAULT_DEDUPE_STRIKE_DEG", 20.0, 1.0, 90.0)
+    stats.update(
+        {
+            "dedupe_distance_km": int(round(distance_threshold_km)),
+            "dedupe_depth_km": int(round(depth_threshold_km)),
+            "dedupe_strike_deg": int(round(strike_threshold_deg)),
+        }
+    )
+
+    kept: list[dict[str, Any]] = []
+    for feature in sorted(features, key=rank, reverse=True):
+        props = feature.get("properties", {})
+        center = (float(props.get("center_x_m", 0.0)), float(props.get("center_y_m", 0.0)))
+        depth = float(props.get("center_depth_km", 0.0))
+        strike = float(props.get("strike", 0.0))
+        duplicate = False
+        for kept_feature in kept:
+            kept_props = kept_feature.get("properties", {})
+            kept_center = (
+                float(kept_props.get("center_x_m", 0.0)),
+                float(kept_props.get("center_y_m", 0.0)),
+            )
+            distance_km = (
+                math.hypot(center[0] - kept_center[0], center[1] - kept_center[1])
+                / 1000.0
+            )
+            depth_diff_km = abs(depth - float(kept_props.get("center_depth_km", 0.0)))
+            strike_diff = _strike_difference_deg(strike, float(kept_props.get("strike", 0.0)))
+            if (
+                distance_km <= distance_threshold_km
+                and depth_diff_km <= depth_threshold_km
+                and strike_diff <= strike_threshold_deg
+            ):
+                duplicate = True
+                break
+        if duplicate:
+            stats["duplicate_removed_count"] += 1
+            continue
+        kept.append(feature)
+        if len(kept) >= max_features:
+            break
+
+    for idx, feature in enumerate(kept):
+        props = feature.setdefault("properties", {})
+        props["raw_segment_id"] = props.get("segment_id", "")
+        props["segment_id"] = f"inferred_fault_{idx:04d}"
+        props["cluster_id"] = idx
+        props["sensitivity_mode"] = "high_resolution_multiscale_overlapping_tiles"
+    return kept, stats
 
 
 def _mechanism_score(strike: float, mechanisms: list[dict[str, Any]], event_ids: set[str]) -> float:
@@ -165,21 +361,14 @@ def infer_faults(config: AppConfig, paths: ProjectPaths) -> dict[str, Any]:
     )
     horizontal_span = max(np.ptp(points[:, 0]), np.ptp(points[:, 1]), 1.0)
     eps_m = min(50_000.0, max(8_000.0, horizontal_span / 20.0))
-    labels = _cluster_points(points, eps_m=eps_m, min_samples=4)
-    positive_labels = {int(label) for label in labels if int(label) >= 0}
-    if len(points) > 1000 and len(positive_labels) <= 1:
-        labels = _tile_cluster_points(points, tile_m=120_000.0, depth_bin_m=20_000.0, min_samples=20)
-        LOGGER.info(
-            "Split broad single cluster into %d local search tiles",
-            len({int(label) for label in labels if int(label) >= 0}),
-        )
-    clusters: dict[int, list[int]] = defaultdict(list)
-    for idx, label in enumerate(labels):
-        if int(label) >= 0:
-            clusters[int(label)].append(idx)
+    candidate_clusters = _candidate_cluster_sets(points, eps_m=eps_m)
+    LOGGER.info(
+        "Prepared %d raw candidate event groups for multiscale fault inference",
+        len(candidate_clusters),
+    )
     projector = LocalProjector(config.region)
     features: list[dict[str, Any]] = []
-    for cluster_id, indices in clusters.items():
+    for raw_cluster_id, indices, inference_method in candidate_clusters:
         if len(indices) < 4:
             continue
         cluster_points = points[indices]
@@ -206,22 +395,27 @@ def infer_faults(config: AppConfig, paths: ProjectPaths) -> dict[str, Any]:
         wave_score = 0.5
         score = fault_score(planarity, mech_score, gnss_score, wave_score, known_score)
         confidence = confidence_from_score(score, len(indices))
-        segment_id = f"inferred_cluster_{cluster_id:03d}"
+        segment_id = f"inferred_raw_{len(features):04d}"
         props = {
             "segment_id": segment_id,
-            "source": "seismicity_pca_dbscan",
+            "source": "seismicity_pca_multiscale",
             "strike": strike,
             "dip": dip,
             "rake": -170.0 if mech_score >= 0.5 else 0.0,
             "length_km": length_km,
             "width_km": width_km,
-            "top_depth_km": max(0.0, center_depth_km - width_km * math.sin(math.radians(dip)) / 2.0),
+            "top_depth_km": max(
+                0.0,
+                center_depth_km - width_km * math.sin(math.radians(dip)) / 2.0,
+            ),
             "bottom_depth_km": center_depth_km + width_km * math.sin(math.radians(dip)) / 2.0,
             "center_depth_km": center_depth_km,
             "center_x_m": float(center[0]),
             "center_y_m": float(center[1]),
             "is_inferred": True,
-            "cluster_id": cluster_id,
+            "cluster_id": raw_cluster_id,
+            "raw_cluster_id": raw_cluster_id,
+            "inference_method": inference_method,
             "n_events": len(indices),
             "seismicity_planarity_score": planarity,
             "mechanism_consistency_score": mech_score,
@@ -264,6 +458,12 @@ def infer_faults(config: AppConfig, paths: ProjectPaths) -> dict[str, Any]:
         )
     if not features:
         raise ValueError("No candidate fault clusters were inferred")
+    max_features = _env_int("CRUST_LITE_FAULT_MAX_FEATURES", 1000, 1, 5000)
+    features, selection_stats = _dedupe_fault_features(features, max_features=max_features)
+    if not features:
+        raise ValueError(
+            "No local candidate fault clusters remained after regional-sheet filtering"
+        )
     is_sample = any(bool(feature["properties"].get("is_sample_data")) for feature in features)
     write_features(
         features,
@@ -271,10 +471,16 @@ def infer_faults(config: AppConfig, paths: ProjectPaths) -> dict[str, Any]:
         {
             "is_sample_data": is_sample,
             "cluster_count": len(features),
-            "method": "DBSCAN/PCA with sklearn when available, grid-cell clustering fallback otherwise",
+            "method": "multiscale DBSCAN/tile PCA with overlapping local search windows",
             "cluster_eps_m": eps_m,
-            "large_catalog_split": "tile_120km_depth20km_if_single_cluster",
+            "sensitivity_mode": "global_dbscan_plus_80km_50km_30km_20km_15km_overlapping_tiles",
+            "max_features": max_features,
+            **selection_stats,
         },
     )
-    LOGGER.info("Inferred %d candidate fault segments", len(features))
-    return {"inferred_fault_count": len(features), "is_sample_data": is_sample}
+    LOGGER.info(
+        "Inferred %d candidate fault segments from %d raw candidates",
+        len(features),
+        selection_stats["raw_candidate_count"],
+    )
+    return {"inferred_fault_count": len(features), "is_sample_data": is_sample, **selection_stats}

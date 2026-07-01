@@ -5,11 +5,13 @@ from crust_lite.config import load_config
 from crust_lite.io.metadata import read_metadata
 from crust_lite.paths import ProjectPaths
 from crust_lite.viz.visualize_3d import plot_z_m
+from tests.helpers import isolated_project
 
 
-def test_run_all_sample_and_3d_outputs() -> None:
-    command_run_all("configs/kumamoto.yml", sample=True)
-    paths = ProjectPaths.from_config(load_config("configs/kumamoto.yml"))
+def test_run_all_sample_and_3d_outputs(tmp_path) -> None:
+    config_path = str(isolated_project(tmp_path))
+    command_run_all(config_path, sample=True)
+    paths = ProjectPaths.from_config(load_config(config_path))
     events_html = paths.outputs_3d / "events_faults_timeseries.html"
     stress_html = paths.outputs_3d / "stress_timeseries_3d.html"
     failure_html = paths.outputs_3d / "failure_scenarios_3d.html"

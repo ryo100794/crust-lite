@@ -4,11 +4,13 @@ from crust_lite.cli import command_domestic_ingest
 from crust_lite.config import load_config
 from crust_lite.io.parquet import read_table
 from crust_lite.paths import ProjectPaths
+from tests.helpers import isolated_project
 
 
-def test_domestic_ingest_registry_outputs() -> None:
-    result = command_domestic_ingest("configs/japan_all_domestic.yml")
-    paths = ProjectPaths.from_config(load_config("configs/japan_all_domestic.yml"))
+def test_domestic_ingest_registry_outputs(tmp_path) -> None:
+    config_path = str(isolated_project(tmp_path, "japan_all_domestic.yml"))
+    result = command_domestic_ingest(config_path)
+    paths = ProjectPaths.from_config(load_config(config_path))
     source_path = paths.data_processed / "domestic_data_source.parquet"
     plan_path = paths.data_processed / "domestic_ingest_plan.parquet"
     report_path = paths.outputs_reports / "domestic_data_ingest_plan.md"

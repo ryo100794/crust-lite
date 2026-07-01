@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -17,9 +18,17 @@ def read_fault_geojson(path: Path) -> list[dict[str, Any]]:
     return list(data.get("features", []))
 
 
+def _trace_strike_deg(xy: list[tuple[float, float]]) -> float:
+    if len(xy) < 2:
+        return 0.0
+    x0, y0 = xy[0]
+    x1, y1 = xy[-1]
+    return (math.degrees(math.atan2(x1 - x0, y1 - y0)) + 360.0) % 360.0
+
+
 def _augment_feature(feature: dict[str, Any], config: AppConfig) -> dict[str, Any]:
     props = dict(feature.get("properties", {}))
-    geom = feature.get("geometry") or {}
+    geom = dict(feature.get("geometry") or {})
     projector = LocalProjector(config.region)
     coords = geom.get("coordinates") or []
     xy = projector.line_lonlat_to_xy(coords) if geom.get("type") == "LineString" else []
@@ -29,10 +38,11 @@ def _augment_feature(feature: dict[str, Any], config: AppConfig) -> dict[str, An
         props["center_y_m"] = sum(ys) / len(ys)
         props["trace_x_m"] = [x for x, _ in xy]
         props["trace_y_m"] = [y for _, y in xy]
+        geom["local_trace_m"] = [[x, y] for x, y in xy]
     props.setdefault("segment_id", f"known_fault_{abs(hash(json.dumps(geom))) % 1_000_000}")
     props.setdefault("source", "local_geojson")
     props.setdefault("fault_type", "unknown")
-    props.setdefault("strike", 0.0)
+    props.setdefault("strike", _trace_strike_deg(xy))
     props.setdefault("dip", 70.0)
     props.setdefault("rake", 0.0)
     props.setdefault("length_km", polyline_length_km(xy))
@@ -46,7 +56,11 @@ def _augment_feature(feature: dict[str, Any], config: AppConfig) -> dict[str, An
     return {"type": "Feature", "geometry": geom, "properties": props}
 
 
-def fetch_active_faults(config: AppConfig, paths: ProjectPaths, sample: bool = False) -> dict[str, Any]:
+def fetch_active_faults(
+    config: AppConfig,
+    paths: ProjectPaths,
+    sample: bool = False,
+) -> dict[str, Any]:
     paths.ensure()
     if not config.data_sources.use_active_faults and not sample:
         write_features([], paths.data_processed / "fault_segment.gpkg", {"is_sample_data": False})

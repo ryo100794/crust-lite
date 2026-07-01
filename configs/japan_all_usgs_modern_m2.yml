@@ -35,7 +35,8 @@ data_sources:
   event_csv: data/raw/usgs/japan_all_2000_2026_m2_depth700_events.csv
   use_jshis: false
   use_gnss: false
-  use_active_faults: false
+  use_active_faults: true
+  active_fault_file: data/raw/active_faults/japan_major_active_faults_coarse_seed.geojson
   use_waveforms: true
   waveform_spectra_csv: data/raw/waveforms/combined/japan_all_2000_2026_m50_spectra.csv
   waveform_feature_csv: data/raw/waveforms/combined/japan_all_2000_2026_m50_waveform_features.csv
@@ -67,7 +68,7 @@ visualization_3d:
   time_bin_days: 30
   mode: window
   max_events: 20000
-  max_fault_segments: 1000
+  max_fault_segments: 1500
   max_frames: 300
   vertical_exaggeration: 2.0
   event_marker_size_min: 2

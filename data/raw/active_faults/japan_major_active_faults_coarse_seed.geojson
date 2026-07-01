@@ -1,0 +1,1352 @@
+{
+  "type": "FeatureCollection",
+  "name": "japan_major_active_faults_coarse_seed_v0",
+  "features": [
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            137.7,
+            36.85
+          ],
+          [
+            137.92,
+            36.25
+          ],
+          [
+            138.25,
+            35.6
+          ],
+          [
+            138.55,
+            35.05
+          ]
+        ]
+      },
+      "properties": {
+        "segment_id": "af_istl",
+        "name": "Itoigawa-Shizuoka Tectonic Line fault zone",
+        "source": "japan_major_active_faults_coarse_seed_v0",
+        "source_agency_reference": "HERP major active fault zones and AIST active fault database names; coarse hand-curated line geometry for prototype overlay",
+        "fault_type": "strike_slip_reverse",
+        "dip": 70.0,
+        "rake": 0.0,
+        "width_km": 15.0,
+        "top_depth_km": 0.0,
+        "bottom_depth_km": 15.0,
+        "is_inferred": false,
+        "confidence": 0.35,
+        "geometry_accuracy": "coarse_seed_not_official_trace",
+        "notes": "Coarse major active fault zone seed for software integration. Replace with official AIST/J-SHIS/GSI GIS trace before scientific interpretation."
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            137.85,
+            36.95
+          ],
+          [
+            138.05,
+            36.65
+          ],
+          [
+            138.25,
+            36.25
+          ]
+        ]
+      },
+      "properties": {
+        "segment_id": "af_fossa_magna_west",
+        "name": "Western margin of Fossa Magna fault zone",
+        "source": "japan_major_active_faults_coarse_seed_v0",
+        "source_agency_reference": "HERP major active fault zones and AIST active fault database names; coarse hand-curated line geometry for prototype overlay",
+        "fault_type": "reverse_strike_slip",
+        "dip": 70.0,
+        "rake": 0.0,
+        "width_km": 15.0,
+        "top_depth_km": 0.0,
+        "bottom_depth_km": 15.0,
+        "is_inferred": false,
+        "confidence": 0.35,
+        "geometry_accuracy": "coarse_seed_not_official_trace",
+        "notes": "Coarse major active fault zone seed for software integration. Replace with official AIST/J-SHIS/GSI GIS trace before scientific interpretation."
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            137.75,
+            36.45
+          ],
+          [
+            137.9,
+            36.65
+          ],
+          [
+            138.05,
+            36.85
+          ]
+        ]
+      },
+      "properties": {
+        "segment_id": "af_kamishiro",
+        "name": "Kamishiro fault zone",
+        "source": "japan_major_active_faults_coarse_seed_v0",
+        "source_agency_reference": "HERP major active fault zones and AIST active fault database names; coarse hand-curated line geometry for prototype overlay",
+        "fault_type": "reverse",
+        "dip": 70.0,
+        "rake": 0.0,
+        "width_km": 15.0,
+        "top_depth_km": 0.0,
+        "bottom_depth_km": 15.0,
+        "is_inferred": false,
+        "confidence": 0.35,
+        "geometry_accuracy": "coarse_seed_not_official_trace",
+        "notes": "Coarse major active fault zone seed for software integration. Replace with official AIST/J-SHIS/GSI GIS trace before scientific interpretation."
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            138.05,
+            36.45
+          ],
+          [
+            138.2,
+            36.7
+          ],
+          [
+            138.35,
+            36.95
+          ]
+        ]
+      },
+      "properties": {
+        "segment_id": "af_nagano_basin_w",
+        "name": "Western Nagano Basin fault zone",
+        "source": "japan_major_active_faults_coarse_seed_v0",
+        "source_agency_reference": "HERP major active fault zones and AIST active fault database names; coarse hand-curated line geometry for prototype overlay",
+        "fault_type": "reverse",
+        "dip": 70.0,
+        "rake": 0.0,
+        "width_km": 15.0,
+        "top_depth_km": 0.0,
+        "bottom_depth_km": 15.0,
+        "is_inferred": false,
+        "confidence": 0.35,
+        "geometry_accuracy": "coarse_seed_not_official_trace",
+        "notes": "Coarse major active fault zone seed for software integration. Replace with official AIST/J-SHIS/GSI GIS trace before scientific interpretation."
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            139.25,
+            35.55
+          ],
+          [
+            139.45,
+            35.68
+          ],
+          [
+            139.65,
+            35.82
+          ]
+        ]
+      },
+      "properties": {
+        "segment_id": "af_tachikawa",
+        "name": "Tachikawa fault zone",
+        "source": "japan_major_active_faults_coarse_seed_v0",
+        "source_agency_reference": "HERP major active fault zones and AIST active fault database names; coarse hand-curated line geometry for prototype overlay",
+        "fault_type": "strike_slip",
+        "dip": 70.0,
+        "rake": 0.0,
+        "width_km": 15.0,
+        "top_depth_km": 0.0,
+        "bottom_depth_km": 15.0,
+        "is_inferred": false,
+        "confidence": 0.35,
+        "geometry_accuracy": "coarse_seed_not_official_trace",
+        "notes": "Coarse major active fault zone seed for software integration. Replace with official AIST/J-SHIS/GSI GIS trace before scientific interpretation."
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            138.85,
+            36.0
+          ],
+          [
+            139.15,
+            36.15
+          ],
+          [
+            139.45,
+            36.25
+          ]
+        ]
+      },
+      "properties": {
+        "segment_id": "af_kanto_plain_nw",
+        "name": "Northwestern Kanto Plain fault zone",
+        "source": "japan_major_active_faults_coarse_seed_v0",
+        "source_agency_reference": "HERP major active fault zones and AIST active fault database names; coarse hand-curated line geometry for prototype overlay",
+        "fault_type": "reverse",
+        "dip": 70.0,
+        "rake": 0.0,
+        "width_km": 15.0,
+        "top_depth_km": 0.0,
+        "bottom_depth_km": 15.0,
+        "is_inferred": false,
+        "confidence": 0.35,
+        "geometry_accuracy": "coarse_seed_not_official_trace",
+        "notes": "Coarse major active fault zone seed for software integration. Replace with official AIST/J-SHIS/GSI GIS trace before scientific interpretation."
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            139.1,
+            36.05
+          ],
+          [
+            139.35,
+            36.15
+          ],
+          [
+            139.6,
+            36.25
+          ]
+        ]
+      },
+      "properties": {
+        "segment_id": "af_fukaya",
+        "name": "Fukaya fault zone",
+        "source": "japan_major_active_faults_coarse_seed_v0",
+        "source_agency_reference": "HERP major active fault zones and AIST active fault database names; coarse hand-curated line geometry for prototype overlay",
+        "fault_type": "reverse",
+        "dip": 70.0,
+        "rake": 0.0,
+        "width_km": 15.0,
+        "top_depth_km": 0.0,
+        "bottom_depth_km": 15.0,
+        "is_inferred": false,
+        "confidence": 0.35,
+        "geometry_accuracy": "coarse_seed_not_official_trace",
+        "notes": "Coarse major active fault zone seed for software integration. Replace with official AIST/J-SHIS/GSI GIS trace before scientific interpretation."
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            139.5,
+            35.75
+          ],
+          [
+            139.7,
+            35.88
+          ],
+          [
+            139.9,
+            36.0
+          ]
+        ]
+      },
+      "properties": {
+        "segment_id": "af_ayasegawa",
+        "name": "Ayasegawa fault zone",
+        "source": "japan_major_active_faults_coarse_seed_v0",
+        "source_agency_reference": "HERP major active fault zones and AIST active fault database names; coarse hand-curated line geometry for prototype overlay",
+        "fault_type": "reverse",
+        "dip": 70.0,
+        "rake": 0.0,
+        "width_km": 15.0,
+        "top_depth_km": 0.0,
+        "bottom_depth_km": 15.0,
+        "is_inferred": false,
+        "confidence": 0.35,
+        "geometry_accuracy": "coarse_seed_not_official_trace",
+        "notes": "Coarse major active fault zone seed for software integration. Replace with official AIST/J-SHIS/GSI GIS trace before scientific interpretation."
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            138.48,
+            34.92
+          ],
+          [
+            138.62,
+            35.12
+          ],
+          [
+            138.78,
+            35.34
+          ]
+        ]
+      },
+      "properties": {
+        "segment_id": "af_fujikawa",
+        "name": "Fujikawa-kako fault zone",
+        "source": "japan_major_active_faults_coarse_seed_v0",
+        "source_agency_reference": "HERP major active fault zones and AIST active fault database names; coarse hand-curated line geometry for prototype overlay",
+        "fault_type": "reverse",
+        "dip": 70.0,
+        "rake": 0.0,
+        "width_km": 15.0,
+        "top_depth_km": 0.0,
+        "bottom_depth_km": 15.0,
+        "is_inferred": false,
+        "confidence": 0.35,
+        "geometry_accuracy": "coarse_seed_not_official_trace",
+        "notes": "Coarse major active fault zone seed for software integration. Replace with official AIST/J-SHIS/GSI GIS trace before scientific interpretation."
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            138.82,
+            34.9
+          ],
+          [
+            138.96,
+            35.05
+          ],
+          [
+            139.1,
+            35.22
+          ]
+        ]
+      },
+      "properties": {
+        "segment_id": "af_northern_izu",
+        "name": "Northern Izu fault zone",
+        "source": "japan_major_active_faults_coarse_seed_v0",
+        "source_agency_reference": "HERP major active fault zones and AIST active fault database names; coarse hand-curated line geometry for prototype overlay",
+        "fault_type": "strike_slip",
+        "dip": 70.0,
+        "rake": 0.0,
+        "width_km": 15.0,
+        "top_depth_km": 0.0,
+        "bottom_depth_km": 15.0,
+        "is_inferred": false,
+        "confidence": 0.35,
+        "geometry_accuracy": "coarse_seed_not_official_trace",
+        "notes": "Coarse major active fault zone seed for software integration. Replace with official AIST/J-SHIS/GSI GIS trace before scientific interpretation."
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            139.78,
+            38.55
+          ],
+          [
+            139.92,
+            38.78
+          ],
+          [
+            140.08,
+            39.02
+          ]
+        ]
+      },
+      "properties": {
+        "segment_id": "af_shonai_e",
+        "name": "Eastern margin of Shonai Plain fault zone",
+        "source": "japan_major_active_faults_coarse_seed_v0",
+        "source_agency_reference": "HERP major active fault zones and AIST active fault database names; coarse hand-curated line geometry for prototype overlay",
+        "fault_type": "reverse",
+        "dip": 70.0,
+        "rake": 0.0,
+        "width_km": 15.0,
+        "top_depth_km": 0.0,
+        "bottom_depth_km": 15.0,
+        "is_inferred": false,
+        "confidence": 0.35,
+        "geometry_accuracy": "coarse_seed_not_official_trace",
+        "notes": "Coarse major active fault zone seed for software integration. Replace with official AIST/J-SHIS/GSI GIS trace before scientific interpretation."
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            140.18,
+            38.08
+          ],
+          [
+            140.3,
+            38.32
+          ],
+          [
+            140.42,
+            38.58
+          ]
+        ]
+      },
+      "properties": {
+        "segment_id": "af_yamagata_basin",
+        "name": "Yamagata Basin fault zone",
+        "source": "japan_major_active_faults_coarse_seed_v0",
+        "source_agency_reference": "HERP major active fault zones and AIST active fault database names; coarse hand-curated line geometry for prototype overlay",
+        "fault_type": "reverse",
+        "dip": 70.0,
+        "rake": 0.0,
+        "width_km": 15.0,
+        "top_depth_km": 0.0,
+        "bottom_depth_km": 15.0,
+        "is_inferred": false,
+        "confidence": 0.35,
+        "geometry_accuracy": "coarse_seed_not_official_trace",
+        "notes": "Coarse major active fault zone seed for software integration. Replace with official AIST/J-SHIS/GSI GIS trace before scientific interpretation."
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            140.78,
+            38.15
+          ],
+          [
+            140.9,
+            38.28
+          ],
+          [
+            141.02,
+            38.43
+          ]
+        ]
+      },
+      "properties": {
+        "segment_id": "af_nagamachi_rifu",
+        "name": "Nagamachi-Rifu fault zone",
+        "source": "japan_major_active_faults_coarse_seed_v0",
+        "source_agency_reference": "HERP major active fault zones and AIST active fault database names; coarse hand-curated line geometry for prototype overlay",
+        "fault_type": "reverse",
+        "dip": 70.0,
+        "rake": 0.0,
+        "width_km": 15.0,
+        "top_depth_km": 0.0,
+        "bottom_depth_km": 15.0,
+        "is_inferred": false,
+        "confidence": 0.35,
+        "geometry_accuracy": "coarse_seed_not_official_trace",
+        "notes": "Coarse major active fault zone seed for software integration. Replace with official AIST/J-SHIS/GSI GIS trace before scientific interpretation."
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            140.18,
+            37.5
+          ],
+          [
+            140.28,
+            37.78
+          ],
+          [
+            140.4,
+            38.02
+          ]
+        ]
+      },
+      "properties": {
+        "segment_id": "af_fukushima_basin_w",
+        "name": "Western margin of Fukushima Basin fault zone",
+        "source": "japan_major_active_faults_coarse_seed_v0",
+        "source_agency_reference": "HERP major active fault zones and AIST active fault database names; coarse hand-curated line geometry for prototype overlay",
+        "fault_type": "reverse",
+        "dip": 70.0,
+        "rake": 0.0,
+        "width_km": 15.0,
+        "top_depth_km": 0.0,
+        "bottom_depth_km": 15.0,
+        "is_inferred": false,
+        "confidence": 0.35,
+        "geometry_accuracy": "coarse_seed_not_official_trace",
+        "notes": "Coarse major active fault zone seed for software integration. Replace with official AIST/J-SHIS/GSI GIS trace before scientific interpretation."
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            139.7,
+            37.18
+          ],
+          [
+            139.82,
+            37.45
+          ],
+          [
+            139.94,
+            37.72
+          ]
+        ]
+      },
+      "properties": {
+        "segment_id": "af_aizu_basin_w",
+        "name": "Western margin of Aizu Basin fault zone",
+        "source": "japan_major_active_faults_coarse_seed_v0",
+        "source_agency_reference": "HERP major active fault zones and AIST active fault database names; coarse hand-curated line geometry for prototype overlay",
+        "fault_type": "reverse",
+        "dip": 70.0,
+        "rake": 0.0,
+        "width_km": 15.0,
+        "top_depth_km": 0.0,
+        "bottom_depth_km": 15.0,
+        "is_inferred": false,
+        "confidence": 0.35,
+        "geometry_accuracy": "coarse_seed_not_official_trace",
+        "notes": "Coarse major active fault zone seed for software integration. Replace with official AIST/J-SHIS/GSI GIS trace before scientific interpretation."
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            140.48,
+            39.08
+          ],
+          [
+            140.6,
+            39.38
+          ],
+          [
+            140.72,
+            39.72
+          ]
+        ]
+      },
+      "properties": {
+        "segment_id": "af_yokote_basin_e",
+        "name": "Eastern margin of Yokote Basin fault zone",
+        "source": "japan_major_active_faults_coarse_seed_v0",
+        "source_agency_reference": "HERP major active fault zones and AIST active fault database names; coarse hand-curated line geometry for prototype overlay",
+        "fault_type": "reverse",
+        "dip": 70.0,
+        "rake": 0.0,
+        "width_km": 15.0,
+        "top_depth_km": 0.0,
+        "bottom_depth_km": 15.0,
+        "is_inferred": false,
+        "confidence": 0.35,
+        "geometry_accuracy": "coarse_seed_not_official_trace",
+        "notes": "Coarse major active fault zone seed for software integration. Replace with official AIST/J-SHIS/GSI GIS trace before scientific interpretation."
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            140.95,
+            39.1
+          ],
+          [
+            141.08,
+            39.45
+          ],
+          [
+            141.22,
+            39.82
+          ]
+        ]
+      },
+      "properties": {
+        "segment_id": "af_kitakami_lowland_w",
+        "name": "Western margin of Kitakami Lowland fault zone",
+        "source": "japan_major_active_faults_coarse_seed_v0",
+        "source_agency_reference": "HERP major active fault zones and AIST active fault database names; coarse hand-curated line geometry for prototype overlay",
+        "fault_type": "reverse",
+        "dip": 70.0,
+        "rake": 0.0,
+        "width_km": 15.0,
+        "top_depth_km": 0.0,
+        "bottom_depth_km": 15.0,
+        "is_inferred": false,
+        "confidence": 0.35,
+        "geometry_accuracy": "coarse_seed_not_official_trace",
+        "notes": "Coarse major active fault zone seed for software integration. Replace with official AIST/J-SHIS/GSI GIS trace before scientific interpretation."
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            140.4,
+            40.5
+          ],
+          [
+            140.58,
+            40.78
+          ],
+          [
+            140.78,
+            41.05
+          ]
+        ]
+      },
+      "properties": {
+        "segment_id": "af_tsugaru",
+        "name": "Tsugaru Mountains western margin fault zone",
+        "source": "japan_major_active_faults_coarse_seed_v0",
+        "source_agency_reference": "HERP major active fault zones and AIST active fault database names; coarse hand-curated line geometry for prototype overlay",
+        "fault_type": "reverse",
+        "dip": 70.0,
+        "rake": 0.0,
+        "width_km": 15.0,
+        "top_depth_km": 0.0,
+        "bottom_depth_km": 15.0,
+        "is_inferred": false,
+        "confidence": 0.35,
+        "geometry_accuracy": "coarse_seed_not_official_trace",
+        "notes": "Coarse major active fault zone seed for software integration. Replace with official AIST/J-SHIS/GSI GIS trace before scientific interpretation."
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            136.65,
+            37.05
+          ],
+          [
+            137.05,
+            37.28
+          ],
+          [
+            137.48,
+            37.52
+          ]
+        ]
+      },
+      "properties": {
+        "segment_id": "af_noto_peninsula",
+        "name": "Noto Peninsula active fault zone",
+        "source": "japan_major_active_faults_coarse_seed_v0",
+        "source_agency_reference": "HERP major active fault zones and AIST active fault database names; coarse hand-curated line geometry for prototype overlay",
+        "fault_type": "reverse_strike_slip",
+        "dip": 70.0,
+        "rake": 0.0,
+        "width_km": 15.0,
+        "top_depth_km": 0.0,
+        "bottom_depth_km": 15.0,
+        "is_inferred": false,
+        "confidence": 0.35,
+        "geometry_accuracy": "coarse_seed_not_official_trace",
+        "notes": "Coarse major active fault zone seed for software integration. Replace with official AIST/J-SHIS/GSI GIS trace before scientific interpretation."
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            136.55,
+            36.42
+          ],
+          [
+            136.7,
+            36.58
+          ],
+          [
+            136.88,
+            36.76
+          ]
+        ]
+      },
+      "properties": {
+        "segment_id": "af_morimoto_togashi",
+        "name": "Morimoto-Togashi fault zone",
+        "source": "japan_major_active_faults_coarse_seed_v0",
+        "source_agency_reference": "HERP major active fault zones and AIST active fault database names; coarse hand-curated line geometry for prototype overlay",
+        "fault_type": "reverse",
+        "dip": 70.0,
+        "rake": 0.0,
+        "width_km": 15.0,
+        "top_depth_km": 0.0,
+        "bottom_depth_km": 15.0,
+        "is_inferred": false,
+        "confidence": 0.35,
+        "geometry_accuracy": "coarse_seed_not_official_trace",
+        "notes": "Coarse major active fault zone seed for software integration. Replace with official AIST/J-SHIS/GSI GIS trace before scientific interpretation."
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            136.65,
+            36.15
+          ],
+          [
+            137.15,
+            36.34
+          ],
+          [
+            137.75,
+            36.55
+          ]
+        ]
+      },
+      "properties": {
+        "segment_id": "af_atotsugawa",
+        "name": "Atotsugawa fault zone",
+        "source": "japan_major_active_faults_coarse_seed_v0",
+        "source_agency_reference": "HERP major active fault zones and AIST active fault database names; coarse hand-curated line geometry for prototype overlay",
+        "fault_type": "strike_slip",
+        "dip": 70.0,
+        "rake": 0.0,
+        "width_km": 15.0,
+        "top_depth_km": 0.0,
+        "bottom_depth_km": 15.0,
+        "is_inferred": false,
+        "confidence": 0.35,
+        "geometry_accuracy": "coarse_seed_not_official_trace",
+        "notes": "Coarse major active fault zone seed for software integration. Replace with official AIST/J-SHIS/GSI GIS trace before scientific interpretation."
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            137.05,
+            35.02
+          ],
+          [
+            137.35,
+            35.48
+          ],
+          [
+            137.72,
+            35.98
+          ]
+        ]
+      },
+      "properties": {
+        "segment_id": "af_atera",
+        "name": "Atera fault zone",
+        "source": "japan_major_active_faults_coarse_seed_v0",
+        "source_agency_reference": "HERP major active fault zones and AIST active fault database names; coarse hand-curated line geometry for prototype overlay",
+        "fault_type": "strike_slip",
+        "dip": 70.0,
+        "rake": 0.0,
+        "width_km": 15.0,
+        "top_depth_km": 0.0,
+        "bottom_depth_km": 15.0,
+        "is_inferred": false,
+        "confidence": 0.35,
+        "geometry_accuracy": "coarse_seed_not_official_trace",
+        "notes": "Coarse major active fault zone seed for software integration. Replace with official AIST/J-SHIS/GSI GIS trace before scientific interpretation."
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            136.3,
+            35.38
+          ],
+          [
+            136.55,
+            35.68
+          ],
+          [
+            136.82,
+            36.0
+          ]
+        ]
+      },
+      "properties": {
+        "segment_id": "af_neodani",
+        "name": "Neodani fault zone",
+        "source": "japan_major_active_faults_coarse_seed_v0",
+        "source_agency_reference": "HERP major active fault zones and AIST active fault database names; coarse hand-curated line geometry for prototype overlay",
+        "fault_type": "strike_slip",
+        "dip": 70.0,
+        "rake": 0.0,
+        "width_km": 15.0,
+        "top_depth_km": 0.0,
+        "bottom_depth_km": 15.0,
+        "is_inferred": false,
+        "confidence": 0.35,
+        "geometry_accuracy": "coarse_seed_not_official_trace",
+        "notes": "Coarse major active fault zone seed for software integration. Replace with official AIST/J-SHIS/GSI GIS trace before scientific interpretation."
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            136.15,
+            35.88
+          ],
+          [
+            136.3,
+            36.08
+          ],
+          [
+            136.46,
+            36.3
+          ]
+        ]
+      },
+      "properties": {
+        "segment_id": "af_fukui_plain_e",
+        "name": "Eastern margin of Fukui Plain fault zone",
+        "source": "japan_major_active_faults_coarse_seed_v0",
+        "source_agency_reference": "HERP major active fault zones and AIST active fault database names; coarse hand-curated line geometry for prototype overlay",
+        "fault_type": "reverse",
+        "dip": 70.0,
+        "rake": 0.0,
+        "width_km": 15.0,
+        "top_depth_km": 0.0,
+        "bottom_depth_km": 15.0,
+        "is_inferred": false,
+        "confidence": 0.35,
+        "geometry_accuracy": "coarse_seed_not_official_trace",
+        "notes": "Coarse major active fault zone seed for software integration. Replace with official AIST/J-SHIS/GSI GIS trace before scientific interpretation."
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            136.45,
+            34.88
+          ],
+          [
+            136.58,
+            35.18
+          ],
+          [
+            136.7,
+            35.48
+          ]
+        ]
+      },
+      "properties": {
+        "segment_id": "af_yoro_kuwana",
+        "name": "Yoro-Kuwana-Yokkaichi fault zone",
+        "source": "japan_major_active_faults_coarse_seed_v0",
+        "source_agency_reference": "HERP major active fault zones and AIST active fault database names; coarse hand-curated line geometry for prototype overlay",
+        "fault_type": "reverse",
+        "dip": 70.0,
+        "rake": 0.0,
+        "width_km": 15.0,
+        "top_depth_km": 0.0,
+        "bottom_depth_km": 15.0,
+        "is_inferred": false,
+        "confidence": 0.35,
+        "geometry_accuracy": "coarse_seed_not_official_trace",
+        "notes": "Coarse major active fault zone seed for software integration. Replace with official AIST/J-SHIS/GSI GIS trace before scientific interpretation."
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            135.7,
+            35.0
+          ],
+          [
+            135.85,
+            35.35
+          ],
+          [
+            136.0,
+            35.72
+          ]
+        ]
+      },
+      "properties": {
+        "segment_id": "af_hanaore",
+        "name": "Hanaore fault zone",
+        "source": "japan_major_active_faults_coarse_seed_v0",
+        "source_agency_reference": "HERP major active fault zones and AIST active fault database names; coarse hand-curated line geometry for prototype overlay",
+        "fault_type": "strike_slip",
+        "dip": 70.0,
+        "rake": 0.0,
+        "width_km": 15.0,
+        "top_depth_km": 0.0,
+        "bottom_depth_km": 15.0,
+        "is_inferred": false,
+        "confidence": 0.35,
+        "geometry_accuracy": "coarse_seed_not_official_trace",
+        "notes": "Coarse major active fault zone seed for software integration. Replace with official AIST/J-SHIS/GSI GIS trace before scientific interpretation."
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            134.55,
+            34.82
+          ],
+          [
+            134.85,
+            34.98
+          ],
+          [
+            135.18,
+            35.12
+          ]
+        ]
+      },
+      "properties": {
+        "segment_id": "af_yamasaki",
+        "name": "Yamasaki fault zone",
+        "source": "japan_major_active_faults_coarse_seed_v0",
+        "source_agency_reference": "HERP major active fault zones and AIST active fault database names; coarse hand-curated line geometry for prototype overlay",
+        "fault_type": "strike_slip",
+        "dip": 70.0,
+        "rake": 0.0,
+        "width_km": 15.0,
+        "top_depth_km": 0.0,
+        "bottom_depth_km": 15.0,
+        "is_inferred": false,
+        "confidence": 0.35,
+        "geometry_accuracy": "coarse_seed_not_official_trace",
+        "notes": "Coarse major active fault zone seed for software integration. Replace with official AIST/J-SHIS/GSI GIS trace before scientific interpretation."
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            134.72,
+            34.22
+          ],
+          [
+            134.95,
+            34.45
+          ],
+          [
+            135.2,
+            34.75
+          ]
+        ]
+      },
+      "properties": {
+        "segment_id": "af_rokko_awaji",
+        "name": "Rokko-Awaji fault zone",
+        "source": "japan_major_active_faults_coarse_seed_v0",
+        "source_agency_reference": "HERP major active fault zones and AIST active fault database names; coarse hand-curated line geometry for prototype overlay",
+        "fault_type": "strike_slip_reverse",
+        "dip": 70.0,
+        "rake": 0.0,
+        "width_km": 15.0,
+        "top_depth_km": 0.0,
+        "bottom_depth_km": 15.0,
+        "is_inferred": false,
+        "confidence": 0.35,
+        "geometry_accuracy": "coarse_seed_not_official_trace",
+        "notes": "Coarse major active fault zone seed for software integration. Replace with official AIST/J-SHIS/GSI GIS trace before scientific interpretation."
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            135.48,
+            34.5
+          ],
+          [
+            135.52,
+            34.68
+          ],
+          [
+            135.58,
+            34.88
+          ]
+        ]
+      },
+      "properties": {
+        "segment_id": "af_uemachi",
+        "name": "Uemachi fault zone",
+        "source": "japan_major_active_faults_coarse_seed_v0",
+        "source_agency_reference": "HERP major active fault zones and AIST active fault database names; coarse hand-curated line geometry for prototype overlay",
+        "fault_type": "reverse",
+        "dip": 70.0,
+        "rake": 0.0,
+        "width_km": 15.0,
+        "top_depth_km": 0.0,
+        "bottom_depth_km": 15.0,
+        "is_inferred": false,
+        "confidence": 0.35,
+        "geometry_accuracy": "coarse_seed_not_official_trace",
+        "notes": "Coarse major active fault zone seed for software integration. Replace with official AIST/J-SHIS/GSI GIS trace before scientific interpretation."
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            136.15,
+            34.55
+          ],
+          [
+            135.7,
+            34.38
+          ],
+          [
+            135.2,
+            34.25
+          ]
+        ]
+      },
+      "properties": {
+        "segment_id": "af_median_tectonic_line_kinki",
+        "name": "Median Tectonic Line active fault zone Kinki",
+        "source": "japan_major_active_faults_coarse_seed_v0",
+        "source_agency_reference": "HERP major active fault zones and AIST active fault database names; coarse hand-curated line geometry for prototype overlay",
+        "fault_type": "strike_slip",
+        "dip": 70.0,
+        "rake": 0.0,
+        "width_km": 15.0,
+        "top_depth_km": 0.0,
+        "bottom_depth_km": 15.0,
+        "is_inferred": false,
+        "confidence": 0.35,
+        "geometry_accuracy": "coarse_seed_not_official_trace",
+        "notes": "Coarse major active fault zone seed for software integration. Replace with official AIST/J-SHIS/GSI GIS trace before scientific interpretation."
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            134.65,
+            34.12
+          ],
+          [
+            133.8,
+            33.95
+          ],
+          [
+            132.85,
+            33.75
+          ],
+          [
+            132.1,
+            33.55
+          ]
+        ]
+      },
+      "properties": {
+        "segment_id": "af_median_tectonic_line_shikoku",
+        "name": "Median Tectonic Line active fault zone Shikoku",
+        "source": "japan_major_active_faults_coarse_seed_v0",
+        "source_agency_reference": "HERP major active fault zones and AIST active fault database names; coarse hand-curated line geometry for prototype overlay",
+        "fault_type": "strike_slip",
+        "dip": 70.0,
+        "rake": 0.0,
+        "width_km": 15.0,
+        "top_depth_km": 0.0,
+        "bottom_depth_km": 15.0,
+        "is_inferred": false,
+        "confidence": 0.35,
+        "geometry_accuracy": "coarse_seed_not_official_trace",
+        "notes": "Coarse major active fault zone seed for software integration. Replace with official AIST/J-SHIS/GSI GIS trace before scientific interpretation."
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            130.32,
+            33.45
+          ],
+          [
+            130.38,
+            33.58
+          ],
+          [
+            130.46,
+            33.72
+          ]
+        ]
+      },
+      "properties": {
+        "segment_id": "af_kego",
+        "name": "Kego fault zone",
+        "source": "japan_major_active_faults_coarse_seed_v0",
+        "source_agency_reference": "HERP major active fault zones and AIST active fault database names; coarse hand-curated line geometry for prototype overlay",
+        "fault_type": "strike_slip",
+        "dip": 70.0,
+        "rake": 0.0,
+        "width_km": 15.0,
+        "top_depth_km": 0.0,
+        "bottom_depth_km": 15.0,
+        "is_inferred": false,
+        "confidence": 0.35,
+        "geometry_accuracy": "coarse_seed_not_official_trace",
+        "notes": "Coarse major active fault zone seed for software integration. Replace with official AIST/J-SHIS/GSI GIS trace before scientific interpretation."
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            130.22,
+            33.62
+          ],
+          [
+            130.4,
+            33.85
+          ],
+          [
+            130.62,
+            34.1
+          ]
+        ]
+      },
+      "properties": {
+        "segment_id": "af_nishiyama",
+        "name": "Nishiyama fault zone",
+        "source": "japan_major_active_faults_coarse_seed_v0",
+        "source_agency_reference": "HERP major active fault zones and AIST active fault database names; coarse hand-curated line geometry for prototype overlay",
+        "fault_type": "strike_slip",
+        "dip": 70.0,
+        "rake": 0.0,
+        "width_km": 15.0,
+        "top_depth_km": 0.0,
+        "bottom_depth_km": 15.0,
+        "is_inferred": false,
+        "confidence": 0.35,
+        "geometry_accuracy": "coarse_seed_not_official_trace",
+        "notes": "Coarse major active fault zone seed for software integration. Replace with official AIST/J-SHIS/GSI GIS trace before scientific interpretation."
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            130.72,
+            32.62
+          ],
+          [
+            130.95,
+            32.76
+          ],
+          [
+            131.22,
+            32.95
+          ]
+        ]
+      },
+      "properties": {
+        "segment_id": "af_futagawa",
+        "name": "Futagawa fault zone",
+        "source": "japan_major_active_faults_coarse_seed_v0",
+        "source_agency_reference": "HERP major active fault zones and AIST active fault database names; coarse hand-curated line geometry for prototype overlay",
+        "fault_type": "strike_slip",
+        "dip": 70.0,
+        "rake": 0.0,
+        "width_km": 15.0,
+        "top_depth_km": 0.0,
+        "bottom_depth_km": 15.0,
+        "is_inferred": false,
+        "confidence": 0.35,
+        "geometry_accuracy": "coarse_seed_not_official_trace",
+        "notes": "Coarse major active fault zone seed for software integration. Replace with official AIST/J-SHIS/GSI GIS trace before scientific interpretation."
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            130.35,
+            31.98
+          ],
+          [
+            130.58,
+            32.25
+          ],
+          [
+            130.82,
+            32.55
+          ]
+        ]
+      },
+      "properties": {
+        "segment_id": "af_hinagu",
+        "name": "Hinagu fault zone",
+        "source": "japan_major_active_faults_coarse_seed_v0",
+        "source_agency_reference": "HERP major active fault zones and AIST active fault database names; coarse hand-curated line geometry for prototype overlay",
+        "fault_type": "strike_slip",
+        "dip": 70.0,
+        "rake": 0.0,
+        "width_km": 15.0,
+        "top_depth_km": 0.0,
+        "bottom_depth_km": 15.0,
+        "is_inferred": false,
+        "confidence": 0.35,
+        "geometry_accuracy": "coarse_seed_not_official_trace",
+        "notes": "Coarse major active fault zone seed for software integration. Replace with official AIST/J-SHIS/GSI GIS trace before scientific interpretation."
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            130.95,
+            33.25
+          ],
+          [
+            131.25,
+            33.28
+          ],
+          [
+            131.65,
+            33.22
+          ]
+        ]
+      },
+      "properties": {
+        "segment_id": "af_beppu_haneyama",
+        "name": "Beppu-Haneyama fault zone",
+        "source": "japan_major_active_faults_coarse_seed_v0",
+        "source_agency_reference": "HERP major active fault zones and AIST active fault database names; coarse hand-curated line geometry for prototype overlay",
+        "fault_type": "normal_strike_slip",
+        "dip": 70.0,
+        "rake": 0.0,
+        "width_km": 15.0,
+        "top_depth_km": 0.0,
+        "bottom_depth_km": 15.0,
+        "is_inferred": false,
+        "confidence": 0.35,
+        "geometry_accuracy": "coarse_seed_not_official_trace",
+        "notes": "Coarse major active fault zone seed for software integration. Replace with official AIST/J-SHIS/GSI GIS trace before scientific interpretation."
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            130.05,
+            32.62
+          ],
+          [
+            130.22,
+            32.74
+          ],
+          [
+            130.42,
+            32.86
+          ]
+        ]
+      },
+      "properties": {
+        "segment_id": "af_unzen_tachibana",
+        "name": "Unzen-Tachibana Bay fault zone",
+        "source": "japan_major_active_faults_coarse_seed_v0",
+        "source_agency_reference": "HERP major active fault zones and AIST active fault database names; coarse hand-curated line geometry for prototype overlay",
+        "fault_type": "normal",
+        "dip": 70.0,
+        "rake": 0.0,
+        "width_km": 15.0,
+        "top_depth_km": 0.0,
+        "bottom_depth_km": 15.0,
+        "is_inferred": false,
+        "confidence": 0.35,
+        "geometry_accuracy": "coarse_seed_not_official_trace",
+        "notes": "Coarse major active fault zone seed for software integration. Replace with official AIST/J-SHIS/GSI GIS trace before scientific interpretation."
+      }
+    }
+  ],
+  "metadata": {
+    "is_sample_data": false,
+    "scientific_use": "prototype overlay only; not official fault trace geometry",
+    "replacement_target": "AIST active fault database or other licensed official GIS layers",
+    "feature_count": 37
+  }
+}

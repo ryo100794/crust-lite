@@ -20,7 +20,12 @@ from typing import Any
 
 from crust_lite.config import AppConfig
 from crust_lite.geo import LocalProjector, clamp01
-from crust_lite.io.database import materialize_file, materialize_known_tables, write_rows_csv_stream
+from crust_lite.io.database import (
+    effective_memory_limit_bytes,
+    materialize_file,
+    materialize_known_tables,
+    write_rows_csv_stream,
+)
 from crust_lite.io.parquet import read_sidecar, read_table, write_sidecar, write_table
 from crust_lite.logging import get_logger
 from crust_lite.paths import ProjectPaths
@@ -820,6 +825,16 @@ def _select_projection_rows(candidates: list[dict[str, Any]], limit: int) -> lis
 
 
 
+def _memory_worker_cap() -> int:
+    limit = effective_memory_limit_bytes()
+    if not limit:
+        return max(1, os.cpu_count() or 1)
+    reserve_bytes = int(os.environ.get("CRUST_LITE_ARRAY_MEMORY_RESERVE_BYTES", str(2 * 1024**3)))
+    per_worker_bytes = int(os.environ.get("CRUST_LITE_ARRAY_WORKER_BYTES", str(2 * 1024**3)))
+    usable = max(0, limit - reserve_bytes)
+    return max(1, usable // max(per_worker_bytes, 1))
+
+
 def _available_worker_count(task_count: int) -> int:
     if task_count <= 1:
         return 1
@@ -833,9 +848,10 @@ def _available_worker_count(task_count: int) -> int:
         affinity = len(os.sched_getaffinity(0))
     except Exception:
         affinity = os.cpu_count() or 1
+    memory_cap = _memory_worker_cap()
     if requested <= 0:
-        requested = affinity
-    return max(1, min(task_count, requested, affinity))
+        requested = min(affinity, memory_cap)
+    return max(1, min(task_count, requested, affinity, memory_cap))
 
 
 def _project_event_task(task: tuple[AppConfig, str, dict[str, Any], list[tuple[float, list[dict[str, Any]]]], list[tuple[float, float]], datetime, bool]) -> list[dict[str, Any]]:

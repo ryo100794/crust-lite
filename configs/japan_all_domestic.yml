@@ -34,6 +34,7 @@ data_sources:
   use_jshis: true
   use_gnss: true
   use_active_faults: true
+  active_fault_file: data/raw/active_faults/japan_major_active_faults_coarse_seed.geojson
   use_waveforms: true
 
 preprocessing:
@@ -63,7 +64,7 @@ visualization_3d:
   time_bin_days: 30
   mode: cumulative
   max_events: 20000
-  max_fault_segments: 1000
+  max_fault_segments: 1500
   max_frames: 300
   vertical_exaggeration: 2.0
   event_marker_size_min: 2

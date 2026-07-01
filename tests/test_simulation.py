@@ -10,10 +10,11 @@ from crust_lite.cli import (
 from crust_lite.config import load_config
 from crust_lite.io.parquet import read_table
 from crust_lite.paths import ProjectPaths
+from tests.helpers import isolated_project
 
 
-def test_simulation_columns() -> None:
-    config_path = "configs/kumamoto.yml"
+def test_simulation_columns(tmp_path) -> None:
+    config_path = str(isolated_project(tmp_path))
     command_fetch(config_path, sample=True)
     command_build_features(config_path)
     command_infer_faults(config_path)
