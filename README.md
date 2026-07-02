@@ -227,10 +227,12 @@ Raw JSON is stored under `data/raw/jshis/`; processed output is
 
 ### Waveforms
 
-Waveforms are optional. With `use_waveforms=false`, the pipeline writes an empty
-`data/processed/waveform_feature.parquet` and continues. For transfer-function
-analysis, use `crust-lite transfer-functions --config ... --sample` or configure
-`data_sources.waveform_spectra_csv`. The spectrum CSV must retain phase and
+Waveforms are optional. Direct waveform handling in the supported downstream
+pipeline is limited to synthetic aperture projection. The compatibility command
+`crust-lite transfer-functions --config ... --sample` only prepares
+`waveform_spectrum.parquet` for that path and does not generate downstream
+site-transfer or structure-anomaly products. Configure
+`data_sources.waveform_spectra_csv` with spectra that retain phase and
 time-delay information, not just amplitude:
 
 - `event_id`, `station_id`, `time_utc`
@@ -238,11 +240,11 @@ time-delay information, not just amplitude:
 - `frequency_hz`, `amplitude`, `phase_rad`, `group_delay_s`
 - optional `p_residual_s`, `s_residual_s`, `source`
 
-The MVP estimates relative complex site transfer functions, validates them with
-leave-one-event-out amplitude/phase prediction, scores structural singularity,
-and compares anomaly stations with known/inferred fault distances. This is not a
-unique 3D subsurface inversion. Future waveform output
-columns are:
+Synthetic aperture then produces `waveform_array_projection.parquet`,
+`gaussian_splat_primitive.parquet`, and frequency-preserving shallow lineament
+tables. Inferred fault candidates consume those synthetic-aperture products, not
+raw waveform records or standalone transfer-function tables. Future waveform
+feature columns remain:
 
 ```text
 event_id,station_id,channel,pga,pgv,psa_0p3,psa_1p0,psa_3p0,p_residual_s,s_residual_s,amp_residual_log,source

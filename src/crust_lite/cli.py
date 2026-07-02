@@ -34,10 +34,7 @@ from crust_lite.processing.historical_quality import build_historical_quality
 from crust_lite.processing.shallow_lineaments import build_shallow_lineaments
 from crust_lite.processing.simulation import run_simulation
 from crust_lite.processing.stress import compute_stress
-from crust_lite.processing.transfer_function import (
-    estimate_transfer_functions,
-    write_empty_transfer_outputs,
-)
+from crust_lite.processing.transfer_function import prepare_waveform_spectrum
 from crust_lite.processing.waveform_features import build_waveform_features
 from crust_lite.report import export_outputs, write_summary
 from crust_lite.viz.dashboard import write_dashboard_stub
@@ -103,17 +100,11 @@ def command_infer_faults(config_path: str, verbose: bool = False) -> dict[str, A
 
 def command_transfer_functions(config_path: str, sample: bool = False, verbose: bool = False) -> dict[str, Any]:
     config, paths = _context(config_path, verbose)
-    if not sample and not config.data_sources.waveform_spectra_csv:
-        LOGGER.info("Skipping transfer functions because waveform_spectra_csv is not configured")
-        return write_empty_transfer_outputs(paths, "waveform_spectra_csv_not_configured", is_sample_data=False)
-    if not sample and config.data_sources.waveform_spectra_csv:
-        source_path = Path(config.data_sources.waveform_spectra_csv)
-        if not source_path.is_absolute():
-            source_path = paths.root / source_path
-        if not source_path.exists():
-            LOGGER.warning("Configured waveform spectra CSV is missing; transfer functions are not generated yet: %s", source_path)
-            return write_empty_transfer_outputs(paths, f"waveform_spectra_csv_missing:{source_path}", is_sample_data=False)
-    return estimate_transfer_functions(config, paths, sample=sample)
+    LOGGER.info(
+        "The transfer-functions compatibility command is restricted to synthetic-aperture spectrum preparation; "
+        "site-transfer and structure-anomaly products are not generated for downstream use."
+    )
+    return prepare_waveform_spectrum(config, paths, sample=sample)
 
 
 def command_array_projection(config_path: str, sample: bool = False, verbose: bool = False) -> dict[str, Any]:
@@ -189,8 +180,8 @@ def command_run_all(config_path: str, sample: bool = False, verbose: bool = Fals
     results["domestic_ingest"] = command_domestic_ingest(config_path, verbose=verbose)
     results["build_features"] = command_build_features(config_path, verbose=verbose)
     # Waveform-derived downstream products are intentionally routed through
-    # synthetic aperture projection. The standalone transfer-function command
-    # remains available for diagnostics, but run-all does not feed it forward.
+    # synthetic aperture projection. The compatibility transfer-functions
+    # command now only prepares the spectrum table used by this path.
     results["array_projection"] = command_array_projection(config_path, sample=sample, verbose=verbose)
     results["shallow_lineaments"] = command_shallow_lineaments(config_path, verbose=verbose)
     results["gpu_prep"] = command_gpu_prep(config_path, sample=sample, verbose=verbose)

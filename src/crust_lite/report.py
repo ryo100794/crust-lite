@@ -60,7 +60,6 @@ def write_summary(config: AppConfig, paths: ProjectPaths) -> Path:
     stress_meta = read_sidecar(paths.data_processed / "stress_state.parquet")
     meta3d = read_metadata(paths.outputs_3d / "metadata.json")
     db_meta = read_metadata(paths.data_processed / "crust_lite.duckdb.metadata.json")
-    tf_meta = read_sidecar(paths.data_processed / "site_transfer_function.parquet")
     domestic_sources = _safe_rows(paths.data_processed / "domestic_ingest_plan.parquet")
     top_faults = _top_inferred(paths)
     top_p50 = _top_scenarios(paths, "failure_index_p50")
@@ -120,8 +119,8 @@ def write_summary(config: AppConfig, paths: ProjectPaths) -> Path:
         "- Stress calculation uses `fallback_approximation` unless a future cutde kernel is implemented.",
         "- Sample data are artificial and cannot be used for scientific interpretation.",
         "- GNSS strain gradient is a local low-cost proxy, not a full strain inversion.",
-        "- Candidate planes are inferred from catalog geometry and can be biased by catalog completeness.",
-        "- Transfer functions are relative complex spectral ratios, not a unique 3D velocity inversion.",
+        "- Candidate planes are inferred from synthetic-aperture shallow lineaments and can be biased by waveform coverage, station geometry, and aperture assumptions.",
+        "- Synthetic-aperture lineaments are relative imaging products, not a unique 3D velocity inversion.",
         "",
         "## 8. Unused data",
         "",
@@ -160,14 +159,12 @@ def write_summary(config: AppConfig, paths: ProjectPaths) -> Path:
         "- mesh policy: DB stores mesh metadata, node/element index tables, and field file indexes; large time-varying arrays should remain in HDF5/Zarr/XDMF or solver-native files.",
         "- mesh tables: `mesh_dataset`, `mesh_node`, `mesh_element`, `mesh_field_index`",
         "",
-        "## 13. Complex Transfer Function Outputs",
+        "## 13. Synthetic Aperture Waveform Products",
         "",
-        f"- transfer method: {tf_meta.get('method', 'not_generated')}",
-        f"- spectrum rows: {tf_meta.get('spectrum_rows', 'not_generated')}",
-        f"- transfer rows: {tf_meta.get('transfer_rows', 'not_generated')}",
-        f"- validation rows: {tf_meta.get('validation_rows', 'not_generated')}",
-        "- phase/group delay are retained so time-delay and triangulation information is not discarded by amplitude-only spectra.",
-        "- outputs: `waveform_spectrum.parquet`, `site_transfer_function.parquet`, `transfer_validation.parquet`, `structure_anomaly.parquet`",
+        "- direct waveform-derived downstream products are not generated; waveforms are reduced through the synthetic aperture path.",
+        "- phase/group delay and frequency slices are retained in `waveform_spectrum.parquet` for array projection.",
+        "- downstream waveform-derived inputs: `waveform_array_projection.parquet`, `gaussian_splat_primitive.parquet`, `shallow_lineament_spectral.parquet`, `shallow_lineament.parquet`",
+        "- inferred faults use `shallow_lineament.parquet`; frequency-resolved evidence remains in `shallow_lineament_spectral.parquet`.",
         "",
         "## 14. 3D visualization outputs",
         "",
