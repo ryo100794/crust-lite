@@ -215,16 +215,18 @@ def _candidate_groups(supports: list[dict[str, Any]], config: AppConfig) -> list
     if len(supports) < config.shallow_lineaments.min_support:
         return []
     xyz = np.asarray([[row["x_m"], row["y_m"], row["z_m"]] for row in supports], dtype=float)
-    labels = _cluster_labels(
-        xyz,
-        eps_m=float(config.shallow_lineaments.cluster_eps_km) * 1000.0,
-        min_support=int(config.shallow_lineaments.min_support),
-    )
     groups: list[tuple[str, list[int]]] = []
-    for label in sorted({int(x) for x in labels if int(x) >= 0}):
-        indices = [idx for idx, value in enumerate(labels) if int(value) == label]
-        if len(indices) >= config.shallow_lineaments.min_support:
-            groups.append((f"dbscan_{label:04d}", indices))
+    max_dbscan_rows = int(config.shallow_lineaments.max_dbscan_rows)
+    if max_dbscan_rows and len(supports) <= max_dbscan_rows:
+        labels = _cluster_labels(
+            xyz,
+            eps_m=float(config.shallow_lineaments.cluster_eps_km) * 1000.0,
+            min_support=int(config.shallow_lineaments.min_support),
+        )
+        for label in sorted({int(x) for x in labels if int(x) >= 0}):
+            indices = [idx for idx, value in enumerate(labels) if int(value) == label]
+            if len(indices) >= config.shallow_lineaments.min_support:
+                groups.append((f"dbscan_{label:04d}", indices))
 
     tile_m = float(config.shallow_lineaments.tile_km) * 1000.0
     depth_m = float(config.shallow_lineaments.tile_depth_km) * 1000.0
@@ -460,6 +462,7 @@ def build_shallow_lineaments(config: AppConfig, paths: ProjectPaths) -> dict[str
         "max_depth_km": config.shallow_lineaments.max_depth_km,
         "min_support": config.shallow_lineaments.min_support,
         "cluster_eps_km": config.shallow_lineaments.cluster_eps_km,
+        "max_dbscan_rows": config.shallow_lineaments.max_dbscan_rows,
         "is_sample_data": is_sample,
         "requires_synthetic_aperture_source": True,
         "not_prediction": True,

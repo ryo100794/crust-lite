@@ -138,6 +138,7 @@ shallow_lineaments:
   max_input_rows: 250000
   max_lineaments: 1000
   min_support: 5
+  max_dbscan_rows: 50000
   cluster_eps_km: 12.0
   tile_km: 30.0
   tile_depth_km: 5.0

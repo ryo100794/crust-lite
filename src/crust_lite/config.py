@@ -122,6 +122,7 @@ class ShallowLineamentConfig:
     max_input_rows: int = 250_000
     max_lineaments: int = 1000
     min_support: int = 5
+    max_dbscan_rows: int = 50_000
     cluster_eps_km: float = 12.0
     tile_km: float = 30.0
     tile_depth_km: float = 5.0
@@ -400,6 +401,8 @@ def parse_config(raw: dict[str, Any]) -> AppConfig:
         raise ValueError("shallow_lineaments.max_lineaments must be positive")
     if shallow_lineaments.min_support < 3:
         raise ValueError("shallow_lineaments.min_support must be at least 3")
+    if shallow_lineaments.max_dbscan_rows < 0:
+        raise ValueError("shallow_lineaments.max_dbscan_rows must be non-negative")
     if shallow_lineaments.cluster_eps_km <= 0:
         raise ValueError("shallow_lineaments.cluster_eps_km must be positive")
     if shallow_lineaments.tile_km <= 0 or shallow_lineaments.tile_depth_km <= 0:
