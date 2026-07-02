@@ -131,3 +131,18 @@ tectonic_model:
   slab_contour_csv: null
   default_show: false
   fallback_to_schematic: false
+
+shallow_lineaments:
+  enabled: true
+  max_depth_km: 20.0
+  max_input_rows: 250000
+  max_lineaments: 1000
+  min_support: 5
+  cluster_eps_km: 12.0
+  tile_km: 30.0
+  tile_depth_km: 5.0
+  min_length_km: 2.0
+  min_linearity: 0.55
+  prefer_waveform_splats: true
+  require_synthetic_aperture_source: true
+  include_event_fallback: false

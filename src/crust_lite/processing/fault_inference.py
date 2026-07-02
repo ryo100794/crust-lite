@@ -20,6 +20,7 @@ from crust_lite.io.parquet import read_table
 from crust_lite.logging import get_logger
 from crust_lite.paths import ProjectPaths
 from crust_lite.processing.scoring import confidence_from_score, fault_score
+from crust_lite.processing.shallow_lineaments import build_shallow_lineaments
 
 LOGGER = get_logger(__name__)
 
@@ -342,8 +343,161 @@ def _known_fault_distance_score(
     return score, min_distance, nearest
 
 
+def _lineament_support_score(row: dict[str, Any]) -> float:
+    n_support = max(0.0, float(row.get("n_support", 0.0)))
+    frequency_count = max(1.0, float(row.get("frequency_count", row.get("spectral_support_count", 1.0))))
+    return clamp01(0.70 * math.log1p(n_support) / math.log1p(80.0) + 0.30 * math.log1p(frequency_count) / math.log1p(8.0))
+
+
+def _lineament_fault_score(row: dict[str, Any], known_score: float) -> float:
+    linearity = clamp01(float(row.get("linearity_score", 0.0)))
+    surface = clamp01(float(row.get("surface_wave_anomaly_score", 0.0)))
+    scattering = clamp01(float(row.get("scattering_lineament_score", 0.0)))
+    support = _lineament_support_score(row)
+    return clamp01(0.30 * linearity + 0.30 * surface + 0.25 * scattering + 0.10 * support + 0.05 * known_score)
+
+
+def _lineament_width_km(row: dict[str, Any]) -> float:
+    depth_width = max(1.0, float(row.get("depth_p95_km", 0.0)) - float(row.get("depth_p05_km", 0.0)))
+    return max(2.0, min(30.0, depth_width + 2.0))
+
+
+def _lineament_fault_features(
+    rows: list[dict[str, Any]],
+    known_features: list[dict[str, Any]],
+    projector: LocalProjector,
+    max_features: int,
+) -> list[dict[str, Any]]:
+    features: list[dict[str, Any]] = []
+    ranked = sorted(
+        rows,
+        key=lambda row: (
+            float(row.get("confidence", 0.0)),
+            float(row.get("frequency_count", row.get("spectral_support_count", 1.0))),
+            float(row.get("length_km", 0.0)),
+        ),
+        reverse=True,
+    )[:max_features]
+    for idx, row in enumerate(ranked):
+        center = (float(row.get("center_x_m", 0.0)), float(row.get("center_y_m", 0.0)))
+        known_score, known_distance_km, nearest_known = _known_fault_distance_score(center, known_features, projector)
+        score = _lineament_fault_score(row, known_score)
+        confidence = clamp01(max(float(row.get("confidence", 0.0)), confidence_from_score(score, int(row.get("n_support", 0) or 0))))
+        width_km = _lineament_width_km(row)
+        segment_id = f"inferred_fault_sa_{idx:04d}"
+        depth_p05 = max(0.0, float(row.get("depth_p05_km", row.get("center_depth_km", 0.0))))
+        depth_p95 = max(depth_p05, float(row.get("depth_p95_km", row.get("center_depth_km", depth_p05))))
+        props = {
+            "segment_id": segment_id,
+            "source": "synthetic_aperture_shallow_lineament",
+            "source_table": row.get("source_table", "shallow_lineament"),
+            "lineament_id": row.get("lineament_id", ""),
+            "strike": float(row.get("strike", 0.0)),
+            "dip": 75.0,
+            "rake": 0.0,
+            "length_km": max(0.5, float(row.get("length_km", 0.5))),
+            "width_km": width_km,
+            "top_depth_km": depth_p05,
+            "bottom_depth_km": depth_p95,
+            "center_depth_km": max(0.0, float(row.get("center_depth_km", 0.0))),
+            "center_x_m": center[0],
+            "center_y_m": center[1],
+            "is_inferred": True,
+            "cluster_id": row.get("lineament_id", idx),
+            "raw_cluster_id": row.get("group_id", ""),
+            "inference_method": "synthetic_aperture_frequency_preserving_lineament",
+            "n_events": int(row.get("event_support_count", 0) or 0),
+            "n_support": int(row.get("n_support", 0) or 0),
+            "spectral_support_count": int(row.get("spectral_support_count", 1) or 1),
+            "band_count": int(row.get("band_count", row.get("frequency_count", 1)) or 1),
+            "frequency_count": int(row.get("frequency_count", 1) or 1),
+            "frequency_hz": row.get("frequency_hz", ""),
+            "frequency_band": row.get("frequency_band", ""),
+            "frequencies_hz": row.get("frequencies_hz", ""),
+            "seismicity_planarity_score": clamp01(float(row.get("linearity_score", 0.0))),
+            "synthetic_aperture_linearity_score": clamp01(float(row.get("linearity_score", 0.0))),
+            "surface_wave_anomaly_score": clamp01(float(row.get("surface_wave_anomaly_score", 0.0))),
+            "scattering_lineament_score": clamp01(float(row.get("scattering_lineament_score", 0.0))),
+            "mechanism_consistency_score": 0.5,
+            "gnss_strain_gradient_score": 0.5,
+            "waveform_residual_score": clamp01(max(float(row.get("surface_wave_anomaly_score", 0.0)), float(row.get("scattering_lineament_score", 0.0)))),
+            "distance_from_known_fault_score": known_score,
+            "distance_to_known_fault_km": known_distance_km,
+            "fault_score": score,
+            "confidence": confidence,
+            "notes": f"synthetic_aperture_lineament; nearest_known={nearest_known}; frequency-resolved source retained in shallow_lineament_spectral.parquet",
+            "is_sample_data": bool(row.get("is_sample_data", False)),
+        }
+        features.append(
+            {
+                "type": "Feature",
+                "properties": props,
+                "geometry": {
+                    "type": "LineString",
+                    "coordinates": [],
+                    "local_trace_m": [
+                        [float(row.get("x0_m", center[0])), float(row.get("y0_m", center[1]))],
+                        [float(row.get("x1_m", center[0])), float(row.get("y1_m", center[1]))],
+                    ],
+                },
+            }
+        )
+    return features
+
+
+def _infer_faults_from_synthetic_aperture_lineaments(config: AppConfig, paths: ProjectPaths) -> dict[str, Any] | None:
+    lineament_path = paths.data_processed / "shallow_lineament.parquet"
+    known_path = paths.data_processed / "fault_segment.gpkg"
+    known_features = read_features(known_path) if known_path.exists() else []
+    if not lineament_path.exists():
+        build_shallow_lineaments(config, paths)
+    rows = read_table(lineament_path) if lineament_path.exists() else []
+    require_synthetic = bool(getattr(config.shallow_lineaments, "require_synthetic_aperture_source", False))
+    if not rows:
+        if require_synthetic:
+            raise ValueError(
+                "Synthetic-aperture shallow lineaments are required for inferred faults; run array-projection and shallow-lineaments first"
+            )
+        return None
+    projector = LocalProjector(config.region)
+    max_features = _env_int("CRUST_LITE_FAULT_MAX_FEATURES", config.shallow_lineaments.max_lineaments, 1, 5000)
+    features = _lineament_fault_features(rows, known_features, projector, max_features=max_features)
+    if not features:
+        if require_synthetic:
+            raise ValueError("No inferred faults were produced from synthetic-aperture shallow lineaments")
+        return None
+    is_sample = any(bool(feature["properties"].get("is_sample_data")) for feature in features)
+    write_features(
+        features,
+        paths.data_processed / "inferred_faults.gpkg",
+        {
+            "is_sample_data": is_sample,
+            "cluster_count": len(features),
+            "method": "synthetic_aperture_shallow_lineament_to_fault_candidates",
+            "source_table": str(lineament_path),
+            "frequency_resolved_source": str(paths.data_processed / "shallow_lineament_spectral.parquet"),
+            "requires_synthetic_aperture_source": require_synthetic,
+            "not_prediction": True,
+            "max_features": max_features,
+        },
+    )
+    LOGGER.info("Inferred %d synthetic-aperture fault candidates", len(features))
+    return {
+        "inferred_fault_count": len(features),
+        "is_sample_data": is_sample,
+        "method": "synthetic_aperture_shallow_lineament_to_fault_candidates",
+        "source_table": str(lineament_path),
+    }
+
+
 def infer_faults(config: AppConfig, paths: ProjectPaths) -> dict[str, Any]:
-    events = read_table(paths.data_interim / "event_qc.parquet")
+    if getattr(getattr(config, "shallow_lineaments", None), "enabled", False):
+        lineament_result = _infer_faults_from_synthetic_aperture_lineaments(config, paths)
+        if lineament_result is not None:
+            return lineament_result
+
+    event_qc_path = paths.data_interim / "event_qc.parquet"
+    events = read_table(event_qc_path)
     mechanisms = read_table(paths.data_processed / "mechanism.parquet") if (
         paths.data_processed / "mechanism.parquet"
     ).exists() else []
@@ -471,7 +625,7 @@ def infer_faults(config: AppConfig, paths: ProjectPaths) -> dict[str, Any]:
         {
             "is_sample_data": is_sample,
             "cluster_count": len(features),
-            "method": "multiscale DBSCAN/tile PCA with overlapping local search windows",
+            "method": "legacy_multiscale_dbscan_tile_pca_disabled_by_default",
             "cluster_eps_m": eps_m,
             "sensitivity_mode": "global_dbscan_plus_80km_50km_30km_20km_15km_overlapping_tiles",
             "max_features": max_features,
@@ -483,4 +637,8 @@ def infer_faults(config: AppConfig, paths: ProjectPaths) -> dict[str, Any]:
         len(features),
         selection_stats["raw_candidate_count"],
     )
-    return {"inferred_fault_count": len(features), "is_sample_data": is_sample, **selection_stats}
+    return {
+        "inferred_fault_count": len(features),
+        "is_sample_data": is_sample,
+        **selection_stats,
+    }

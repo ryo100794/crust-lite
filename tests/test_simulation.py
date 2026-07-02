@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from crust_lite.cli import (
+    command_array_projection,
     command_build_features,
     command_fetch,
     command_infer_faults,
+    command_shallow_lineaments,
     command_simulate,
     command_stress,
 )
@@ -17,6 +19,8 @@ def test_simulation_columns(tmp_path) -> None:
     config_path = str(isolated_project(tmp_path))
     command_fetch(config_path, sample=True)
     command_build_features(config_path)
+    command_array_projection(config_path, sample=True)
+    command_shallow_lineaments(config_path)
     command_infer_faults(config_path)
     command_stress(config_path)
     command_simulate(config_path)

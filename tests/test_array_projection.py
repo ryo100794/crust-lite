@@ -7,7 +7,6 @@ from crust_lite.cli import (
     command_array_projection,
     command_build_features,
     command_fetch,
-    command_transfer_functions,
 )
 from crust_lite.config import load_config
 from crust_lite.io.parquet import read_sidecar, read_table
@@ -66,7 +65,6 @@ def test_sample_waveform_array_projection_outputs(tmp_path: Path) -> None:
     config_path = str(_sample_project(tmp_path))
     command_fetch(config_path, sample=True)
     command_build_features(config_path)
-    command_transfer_functions(config_path, sample=True)
     result = command_array_projection(config_path, sample=True)
     paths = ProjectPaths.from_config(load_config(config_path))
 

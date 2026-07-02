@@ -29,7 +29,7 @@ from crust_lite.io.database import (
 from crust_lite.io.parquet import read_sidecar, read_table, write_sidecar, write_table
 from crust_lite.logging import get_logger
 from crust_lite.paths import ProjectPaths
-from crust_lite.processing.transfer_function import estimate_transfer_functions
+from crust_lite.processing.transfer_function import prepare_waveform_spectrum
 from crust_lite.viz.webgl_splats import write_webgl_splat_preview
 
 LOGGER = get_logger(__name__)
@@ -391,7 +391,7 @@ def _resolve_spectrum_event_id(row: dict[str, Any], events: dict[str, dict[str, 
 def _read_spectra(config: AppConfig, paths: ProjectPaths, sample: bool) -> tuple[list[dict[str, Any]], bool, str]:
     spectra_path = paths.data_processed / "waveform_spectrum.parquet"
     if not spectra_path.exists() and (sample or config.data_sources.waveform_spectra_csv):
-        estimate_transfer_functions(config, paths, sample=sample)
+        prepare_waveform_spectrum(config, paths, sample=sample)
     if not spectra_path.exists():
         return [], False, "waveform_spectrum_not_available"
     meta = read_sidecar(spectra_path)

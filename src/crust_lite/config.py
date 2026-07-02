@@ -116,6 +116,23 @@ class WaveformArrayConfig:
 
 
 @dataclass(frozen=True)
+class ShallowLineamentConfig:
+    enabled: bool = True
+    max_depth_km: float = 20.0
+    max_input_rows: int = 250_000
+    max_lineaments: int = 1000
+    min_support: int = 5
+    cluster_eps_km: float = 12.0
+    tile_km: float = 30.0
+    tile_depth_km: float = 5.0
+    min_length_km: float = 2.0
+    min_linearity: float = 0.55
+    prefer_waveform_splats: bool = True
+    require_synthetic_aperture_source: bool = True
+    include_event_fallback: bool = False
+
+
+@dataclass(frozen=True)
 class TectonicModelConfig:
     enabled: bool = True
     source: str = "configured_external_plate_model"
@@ -186,6 +203,7 @@ class AppConfig:
     preprocessing: PreprocessingConfig = field(default_factory=PreprocessingConfig)
     visualization_3d: Visualization3DConfig = field(default_factory=Visualization3DConfig)
     waveform_array: WaveformArrayConfig = field(default_factory=WaveformArrayConfig)
+    shallow_lineaments: ShallowLineamentConfig = field(default_factory=ShallowLineamentConfig)
     tectonic_model: TectonicModelConfig = field(default_factory=TectonicModelConfig)
     path: Path | None = None
 
@@ -226,6 +244,7 @@ def load_config(path: str | Path) -> AppConfig:
         preprocessing=cfg.preprocessing,
         visualization_3d=cfg.visualization_3d,
         waveform_array=cfg.waveform_array,
+        shallow_lineaments=cfg.shallow_lineaments,
         tectonic_model=cfg.tectonic_model,
         path=config_path,
     )
@@ -241,6 +260,7 @@ def parse_config(raw: dict[str, Any]) -> AppConfig:
     resources_raw = raw.get("resources", {})
     preprocessing_raw = raw.get("preprocessing", {})
     waveform_array_raw = raw.get("waveform_array", {})
+    shallow_lineaments_raw = raw.get("shallow_lineaments", {})
     tectonic_model_raw = raw.get("tectonic_model", {})
 
     bbox = _tuple_float(region_raw.get("bbox"), 4, "region.bbox")
@@ -369,6 +389,26 @@ def parse_config(raw: dict[str, Any]) -> AppConfig:
     if waveform_array.hinet_source_boost <= 0:
         raise ValueError("waveform_array.hinet_source_boost must be positive")
 
+    shallow_lineaments = ShallowLineamentConfig(
+        **{**ShallowLineamentConfig().__dict__, **shallow_lineaments_raw}
+    )
+    if shallow_lineaments.max_depth_km <= 0:
+        raise ValueError("shallow_lineaments.max_depth_km must be positive")
+    if shallow_lineaments.max_input_rows <= 0:
+        raise ValueError("shallow_lineaments.max_input_rows must be positive")
+    if shallow_lineaments.max_lineaments <= 0:
+        raise ValueError("shallow_lineaments.max_lineaments must be positive")
+    if shallow_lineaments.min_support < 3:
+        raise ValueError("shallow_lineaments.min_support must be at least 3")
+    if shallow_lineaments.cluster_eps_km <= 0:
+        raise ValueError("shallow_lineaments.cluster_eps_km must be positive")
+    if shallow_lineaments.tile_km <= 0 or shallow_lineaments.tile_depth_km <= 0:
+        raise ValueError("shallow_lineaments tile sizes must be positive")
+    if shallow_lineaments.min_length_km <= 0:
+        raise ValueError("shallow_lineaments.min_length_km must be positive")
+    if not 0.0 <= shallow_lineaments.min_linearity <= 1.0:
+        raise ValueError("shallow_lineaments.min_linearity must be within [0, 1]")
+
     tectonic_model = TectonicModelConfig(**{**TectonicModelConfig().__dict__, **tectonic_model_raw})
 
     return AppConfig(
@@ -404,6 +444,7 @@ def parse_config(raw: dict[str, Any]) -> AppConfig:
         resources=resources,
         preprocessing=preprocessing,
         waveform_array=waveform_array,
+        shallow_lineaments=shallow_lineaments,
         tectonic_model=tectonic_model,
         data_sources=DataSourceConfig(
             use_fdsn=bool(_get(sources_raw, "use_fdsn")),

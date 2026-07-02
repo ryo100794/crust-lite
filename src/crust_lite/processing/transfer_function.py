@@ -448,6 +448,125 @@ def _estimate_transfer_functions_db(
     return summary
 
 
+def prepare_waveform_spectrum(config: AppConfig, paths: ProjectPaths, sample: bool = False) -> dict[str, Any]:
+    """Prepare only the spectrum table used by synthetic aperture projection.
+
+    This deliberately does not estimate site transfer functions or structure
+    anomalies. Downstream fault derivation can then be constrained to products
+    created by the synthetic aperture path.
+    """
+    spectra_path, is_sample_path = _resolve_spectra_path(config, paths, sample)
+    source_count = _count_csv_rows(spectra_path)
+    fieldnames = _fieldnames(spectra_path)
+    missing = SPECTRA_COLUMNS.difference(fieldnames)
+    if missing:
+        raise ValueError(f"Waveform spectra CSV missing columns {sorted(missing)}: {spectra_path}")
+    calibration_meta = {
+        **_calibration_metadata(fieldnames, is_sample=is_sample_path, source_path=spectra_path),
+        "prepared_for": "synthetic_aperture_array_projection",
+        "transfer_function_outputs_created": False,
+        "not_prediction": True,
+    }
+    plan = choose_execution_plan(
+        config,
+        operation="synthetic_aperture_spectrum_ingest",
+        engine=database_engine(paths),
+        estimated_rows=source_count,
+        estimated_row_bytes=192,
+    )
+    if not plan.use_in_memory and database_engine(paths) == "duckdb":
+        optional_sql = ", ".join(
+            [
+                _sql_optional(fieldnames, "source", "''", "VARCHAR"),
+                _sql_optional(fieldnames, "unit_status", "'unknown_unverified'", "VARCHAR"),
+                _sql_optional(fieldnames, "physical_unit", "'relative_or_counts'", "VARCHAR"),
+                _sql_optional(fieldnames, "calibration_applied", "FALSE", "BOOLEAN"),
+                _sql_optional(fieldnames, "calib", "1.0", "DOUBLE"),
+                _sql_optional(fieldnames, "scale", "1.0", "DOUBLE"),
+                _sql_optional(fieldnames, "sensitivity_removed", "FALSE", "BOOLEAN"),
+                _sql_optional(fieldnames, "nano_scale_applied", "FALSE", "BOOLEAN"),
+                _sql_optional(fieldnames, "conversion_method", "'unknown'", "VARCHAR"),
+                _sql_optional(fieldnames, "conversion_formula", "''", "VARCHAR"),
+                _sql_optional(fieldnames, "orientation_applied", "FALSE", "BOOLEAN"),
+                _sql_optional(fieldnames, "cmpaz_deg", "NULL", "DOUBLE"),
+                _sql_optional(fieldnames, "cmpinc_deg", "NULL", "DOUBLE"),
+                _sql_optional(fieldnames, "station_elevation_m", "NULL", "DOUBLE"),
+                _sql_optional(fieldnames, "station_depth_m", "NULL", "DOUBLE"),
+            ]
+        )
+        con = connect(paths)
+        literal = _quote_sql_path(spectra_path)
+        try:
+            con.execute(
+                "CREATE OR REPLACE TABLE waveform_spectrum AS "
+                "SELECT CAST(event_id AS VARCHAR) AS event_id, "
+                "CAST(station_id AS VARCHAR) AS station_id, "
+                "CAST(COALESCE(time_utc, '') AS VARCHAR) AS time_utc, "
+                f"{_sql_optional(fieldnames, 'lat', '0', 'DOUBLE')}, "
+                f"{_sql_optional(fieldnames, 'lon', '0', 'DOUBLE')}, "
+                "CAST(frequency_hz AS DOUBLE) AS frequency_hz, "
+                "GREATEST(CAST(amplitude AS DOUBLE), 1e-30) AS amplitude, "
+                "LN(GREATEST(CAST(amplitude AS DOUBLE), 1e-30)) AS log_amplitude, "
+                "ATAN2(SIN(CAST(phase_rad AS DOUBLE)), COS(CAST(phase_rad AS DOUBLE))) AS phase_rad, "
+                "CAST(group_delay_s AS DOUBLE) AS group_delay_s, "
+                "CAST(COALESCE(p_residual_s, 0) AS DOUBLE) AS p_residual_s, "
+                "CAST(COALESCE(s_residual_s, 0) AS DOUBLE) AS s_residual_s, "
+                f"{optional_sql}, "
+                f"CAST({'TRUE' if is_sample_path else 'FALSE'} AS BOOLEAN) AS is_sample_data "
+                f"FROM read_csv_auto({literal}, header=true, sample_size=-1)"
+            )
+        finally:
+            con.close()
+        copy_table_to_parquet(paths, "waveform_spectrum", paths.data_processed / "waveform_spectrum.parquet", {**calibration_meta, "execution": "duckdb_sql"})
+        return {"spectrum_rows": source_count, "is_sample_data": is_sample_path, "source_path": str(spectra_path), "execution": "duckdb_sql"}
+
+    rows, is_sample, source_path = _prepare_spectra(config, paths, sample=sample)
+    projector = LocalProjector(config.region)
+    spectra_rows: list[dict[str, Any]] = []
+    for row in rows:
+        lat = float(row.get("lat", 0.0) or 0.0)
+        lon = float(row.get("lon", 0.0) or 0.0)
+        x_m, y_m = projector.lonlat_to_xy(lon, lat) if lat and lon else (0.0, 0.0)
+        amp = max(float(row["amplitude"]), 1e-30)
+        spectra_rows.append(
+            {
+                "event_id": row["event_id"],
+                "station_id": row["station_id"],
+                "time_utc": row.get("time_utc", ""),
+                "lat": lat,
+                "lon": lon,
+                "x_m": x_m,
+                "y_m": y_m,
+                "frequency_hz": float(row["frequency_hz"]),
+                "amplitude": amp,
+                "log_amplitude": math.log(amp),
+                "phase_rad": _wrap_phase(float(row["phase_rad"])),
+                "group_delay_s": float(row.get("group_delay_s", 0.0) or 0.0),
+                "p_residual_s": float(row.get("p_residual_s", 0.0) or 0.0),
+                "s_residual_s": float(row.get("s_residual_s", 0.0) or 0.0),
+                "source": row.get("source", source_path),
+                "unit_status": row.get("unit_status", "unknown_unverified"),
+                "physical_unit": row.get("physical_unit", "relative_or_counts"),
+                "calibration_applied": str(row.get("calibration_applied", "false")).lower() in {"1", "true", "yes"},
+                "calib": float(row.get("calib", 1.0) or 1.0),
+                "scale": float(row.get("scale", 1.0) or 1.0),
+                "sensitivity_removed": str(row.get("sensitivity_removed", "false")).lower() in {"1", "true", "yes"},
+                "nano_scale_applied": str(row.get("nano_scale_applied", "false")).lower() in {"1", "true", "yes"},
+                "conversion_method": row.get("conversion_method", "unknown"),
+                "conversion_formula": row.get("conversion_formula", ""),
+                "orientation_applied": str(row.get("orientation_applied", "false")).lower() in {"1", "true", "yes"},
+                "cmpaz_deg": float(row["cmpaz_deg"]) if row.get("cmpaz_deg") not in (None, "") else None,
+                "cmpinc_deg": float(row["cmpinc_deg"]) if row.get("cmpinc_deg") not in (None, "") else None,
+                "station_elevation_m": float(row["station_elevation_m"]) if row.get("station_elevation_m") not in (None, "") else None,
+                "station_depth_m": float(row["station_depth_m"]) if row.get("station_depth_m") not in (None, "") else None,
+                "is_sample_data": is_sample,
+            }
+        )
+    write_table(spectra_rows, paths.data_processed / "waveform_spectrum.parquet", calibration_meta)
+    materialize_file(paths, "waveform_spectrum", paths.data_processed / "waveform_spectrum.parquet")
+    return {"spectrum_rows": len(spectra_rows), "is_sample_data": is_sample, "source_path": str(source_path), "execution": "python"}
+
+
 def estimate_transfer_functions(config: AppConfig, paths: ProjectPaths, sample: bool = False) -> dict[str, Any]:
     """Estimate transfer functions and validation metrics for one config."""
     spectra_path, is_sample_path = _resolve_spectra_path(config, paths, sample)
