@@ -76,6 +76,14 @@ class WaveformArrayConfig:
     depth_velocity_min_km_s: float = 2.8
     depth_velocity_max_km_s: float = 4.6
     depth_velocity_samples: int = 7
+    near_surface_depth_km: float = 20.0
+    near_surface_projection_grid_km: float = 10.0
+    near_surface_projection_refinement_fraction: float = 0.35
+    near_surface_projection_refinement_steps: int = 3
+    near_surface_depth_quadrature_samples: int = 9
+    near_surface_depth_quadrature_min_width_km: float = 0.1
+    near_surface_splat_sigma_vertical_m: float = 2500.0
+    near_surface_resolution_sigma_min_m: float = 1500.0
     projection_refinement_enabled: bool = True
     projection_refinement_fraction: float = 0.5
     projection_refinement_steps: int = 1
@@ -312,6 +320,24 @@ def parse_config(raw: dict[str, Any]) -> AppConfig:
         raise ValueError("waveform_array.depth_velocity_min_km_s must be <= depth_velocity_max_km_s")
     if waveform_array.depth_velocity_samples <= 0:
         raise ValueError("waveform_array.depth_velocity_samples must be positive")
+    if waveform_array.near_surface_depth_km <= 0:
+        raise ValueError("waveform_array.near_surface_depth_km must be positive")
+    if waveform_array.near_surface_projection_grid_km <= 0:
+        raise ValueError("waveform_array.near_surface_projection_grid_km must be positive")
+    if waveform_array.near_surface_projection_grid_km > waveform_array.projection_grid_km:
+        raise ValueError("waveform_array.near_surface_projection_grid_km must be <= projection_grid_km")
+    if waveform_array.near_surface_projection_refinement_fraction <= 0:
+        raise ValueError("waveform_array.near_surface_projection_refinement_fraction must be positive")
+    if waveform_array.near_surface_projection_refinement_steps < 0:
+        raise ValueError("waveform_array.near_surface_projection_refinement_steps must be non-negative")
+    if waveform_array.near_surface_depth_quadrature_samples <= 0:
+        raise ValueError("waveform_array.near_surface_depth_quadrature_samples must be positive")
+    if waveform_array.near_surface_depth_quadrature_min_width_km < 0:
+        raise ValueError("waveform_array.near_surface_depth_quadrature_min_width_km must be non-negative")
+    if waveform_array.near_surface_splat_sigma_vertical_m <= 0:
+        raise ValueError("waveform_array.near_surface_splat_sigma_vertical_m must be positive")
+    if waveform_array.near_surface_resolution_sigma_min_m <= 0:
+        raise ValueError("waveform_array.near_surface_resolution_sigma_min_m must be positive")
     if waveform_array.projection_refinement_fraction <= 0:
         raise ValueError("waveform_array.projection_refinement_fraction must be positive")
     if waveform_array.projection_refinement_steps < 0:

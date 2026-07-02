@@ -265,6 +265,15 @@ def _depth_interval_from_uncertainty(depth_km: float, uncertainty_km: float, max
     return max(0.0, center - unc), center, min(float(max_depth_km), center + unc)
 
 
+def _is_near_surface_depth(config: AppConfig, depth_km: float) -> bool:
+    return float(depth_km) <= float(config.waveform_array.near_surface_depth_km)
+
+
+def _odd_sample_count(value: int) -> int:
+    count = max(1, int(value))
+    return count + 1 if count % 2 == 0 else count
+
+
 def _depth_quadrature_points(
     config: AppConfig,
     depth_p05_km: float,
@@ -275,22 +284,32 @@ def _depth_quadrature_points(
 ) -> list[tuple[int, int, float, float, str]]:
     """Return weighted depth centers for one projected primitive.
 
-    The earlier prototype collapsed every late-phase candidate to one median
-    depth, which made p50 quantization appear as false horizontal layers. For
-    structure candidates we keep a small deterministic quadrature over the
-    p05-p50-p95 interval. Direct catalog hypocenters remain single anchors so
-    their catalog-depth uncertainty is not misrepresented as imaged structure.
+    Near-surface intervals use a denser, narrower quadrature.  The shallow
+    crust is where active faults, basin edges, and station-site anomalies are
+    most likely to be visually smeared by a coarse global depth kernel, so this
+    keeps the additional CPU work local to the shallow part of the model.
     """
-    sample_count = max(1, int(config.waveform_array.depth_quadrature_samples))
-    if sample_count % 2 == 0:
-        sample_count += 1
     max_depth_km = float(config.filters.max_depth_km)
     lo = max(0.0, min(max_depth_km, float(depth_p05_km)))
     mid = max(0.0, min(max_depth_km, float(depth_p50_km)))
     hi = max(0.0, min(max_depth_km, float(depth_p95_km)))
     if lo > mid or mid > hi:
         lo, mid, hi = _depth_interval_from_uncertainty(mid, max(0.0, 0.5 * (hi - lo)), max_depth_km)
-    min_width = max(0.0, float(config.waveform_array.depth_quadrature_min_width_km))
+    near_surface = lo <= float(config.waveform_array.near_surface_depth_km)
+    sample_count = _odd_sample_count(
+        max(
+            int(config.waveform_array.depth_quadrature_samples),
+            int(config.waveform_array.near_surface_depth_quadrature_samples) if near_surface else 1,
+        )
+    )
+    min_width = max(
+        0.0,
+        float(
+            config.waveform_array.near_surface_depth_quadrature_min_width_km
+            if near_surface
+            else config.waveform_array.depth_quadrature_min_width_km
+        ),
+    )
     if sample_count <= 1 or not is_structure_candidate or primitive_type == "direct" or hi - lo < min_width:
         return [(0, 1, mid, 1.0, "single_depth_center")]
 
@@ -307,11 +326,15 @@ def _depth_quadrature_points(
     sigma_km = max(min_width, (hi - lo) / (2.0 * 1.6448536269514722))
     weights = [math.exp(-0.5 * ((depth - mid) / max(sigma_km, 1.0e-6)) ** 2) for depth in depths]
     total = max(sum(weights), 1.0e-12)
+    method = (
+        "near_surface_p05_p50_p95_adaptive_depth_quadrature"
+        if near_surface
+        else "p05_p50_p95_gaussian_depth_quadrature"
+    )
     return [
-        (idx, sample_count, depth, weight / total, "p05_p50_p95_gaussian_depth_quadrature")
+        (idx, sample_count, depth, weight / total, method)
         for idx, (depth, weight) in enumerate(zip(depths, weights, strict=False))
     ]
-
 
 def _late_depth_ensemble(config: AppConfig, event_z_m: float, late_delay_s: float) -> tuple[float, float, float, float, list[float]]:
     velocities = _velocity_ensemble(config)
@@ -474,18 +497,48 @@ def _slowness_vector_s_per_km(event_x: float, event_y: float, gx: float, gy: flo
     return slowness * dx_km / distance_km, slowness * dy_km / distance_km
 
 
-def _resolution_sigma_m(config: AppConfig, frequency_hz: float, aperture_km: float) -> float:
+def _resolution_sigma_m(
+    config: AppConfig,
+    frequency_hz: float,
+    aperture_km: float,
+    depth_km: float | None = None,
+) -> float:
     if not config.waveform_array.synthetic_aperture_enabled:
         return float(config.waveform_array.splat_sigma_horizontal_m)
+    near_surface = depth_km is not None and _is_near_surface_depth(config, depth_km)
     frequency = max(float(frequency_hz), 1e-6)
     wavelength_m = config.waveform_array.velocity_km_s * 1000.0 / frequency
     aperture_m = max(float(aperture_km) * 1000.0, 1.0)
     aperture_gain = max(1.0, aperture_m / max(wavelength_m, 1.0))
-    grid_floor_m = 0.5 * config.waveform_array.projection_grid_km * 1000.0
+    grid_km = (
+        config.waveform_array.near_surface_projection_grid_km
+        if near_surface
+        else config.waveform_array.projection_grid_km
+    )
+    grid_floor_m = 0.5 * float(grid_km) * 1000.0
     sigma = max(grid_floor_m, 0.5 * wavelength_m / math.sqrt(aperture_gain))
+    min_sigma_m = (
+        config.waveform_array.near_surface_resolution_sigma_min_m
+        if near_surface
+        else config.waveform_array.resolution_sigma_min_m
+    )
     return max(
-        float(config.waveform_array.resolution_sigma_min_m),
+        float(min_sigma_m),
         min(float(config.waveform_array.resolution_sigma_max_m), sigma),
+    )
+
+
+def _vertical_resolution_sigma_m(config: AppConfig, depth_km: float, sigma_xy_m: float) -> float:
+    near_surface = _is_near_surface_depth(config, depth_km)
+    vertical_floor_m = (
+        config.waveform_array.near_surface_splat_sigma_vertical_m
+        if near_surface
+        else config.waveform_array.splat_sigma_vertical_m
+    )
+    xy_factor = 0.35 if near_surface else 0.60
+    return max(
+        float(vertical_floor_m),
+        min(float(config.waveform_array.resolution_sigma_max_m), xy_factor * max(float(sigma_xy_m), 1.0)),
     )
 
 
@@ -555,6 +608,7 @@ def _refine_projection_candidate(
     gy: float,
     frequency_hz: float,
     velocity_m_s: float,
+    near_surface: bool = False,
 ) -> tuple[float, float, float, float, float, float, float, float, float, str]:
     energy, phase_coherence, delay_fit, phase_result = _score_candidate(
         stations,
@@ -566,7 +620,22 @@ def _refine_projection_candidate(
         config.waveform_array.use_phase,
         config.waveform_array.use_group_delay,
     )
-    if not config.waveform_array.projection_refinement_enabled or config.waveform_array.projection_refinement_steps <= 0:
+    refinement_steps = (
+        int(config.waveform_array.near_surface_projection_refinement_steps)
+        if near_surface
+        else int(config.waveform_array.projection_refinement_steps)
+    )
+    refinement_fraction = (
+        float(config.waveform_array.near_surface_projection_refinement_fraction)
+        if near_surface
+        else float(config.waveform_array.projection_refinement_fraction)
+    )
+    grid_km = (
+        float(config.waveform_array.near_surface_projection_grid_km)
+        if near_surface
+        else float(config.waveform_array.projection_grid_km)
+    )
+    if not config.waveform_array.projection_refinement_enabled or refinement_steps <= 0:
         return gx, gy, energy, phase_coherence, delay_fit, phase_result, 0.0, 0.0, 0.0, "coarse_grid_only"
 
     start_x = gx
@@ -575,12 +644,7 @@ def _refine_projection_candidate(
     best_y = gy
     best = (energy, phase_coherence, delay_fit, phase_result)
     initial_energy = energy
-    step_m = max(
-        100.0,
-        float(config.waveform_array.projection_grid_km)
-        * 1000.0
-        * float(config.waveform_array.projection_refinement_fraction),
-    )
+    step_m = max(50.0 if near_surface else 100.0, grid_km * 1000.0 * refinement_fraction)
     stencil = [
         (0.0, 0.0),
         (-1.0, 0.0),
@@ -592,7 +656,7 @@ def _refine_projection_candidate(
         (1.0, -1.0),
         (1.0, 1.0),
     ]
-    for _ in range(int(config.waveform_array.projection_refinement_steps)):
+    for _ in range(refinement_steps):
         improved = False
         for sx, sy in stencil:
             cx = best_x + sx * step_m
@@ -626,7 +690,7 @@ def _refine_projection_candidate(
         best_x - start_x,
         best_y - start_y,
         score_gain,
-        "local_subgrid_delay_phase_refinement",
+        "near_surface_local_subgrid_delay_phase_refinement" if near_surface else "local_subgrid_delay_phase_refinement",
     )
 
 
@@ -854,8 +918,19 @@ def _available_worker_count(task_count: int) -> int:
     return max(1, min(task_count, requested, affinity, memory_cap))
 
 
-def _project_event_task(task: tuple[AppConfig, str, dict[str, Any], list[tuple[float, list[dict[str, Any]]]], list[tuple[float, float]], datetime, bool]) -> list[dict[str, Any]]:
-    config, event_id, event, event_freq_rows, offsets, start, is_sample = task
+def _project_event_task(
+    task: tuple[
+        AppConfig,
+        str,
+        dict[str, Any],
+        list[tuple[float, list[dict[str, Any]]]],
+        list[tuple[float, float]],
+        list[tuple[float, float]],
+        datetime,
+        bool,
+    ],
+) -> list[dict[str, Any]]:
+    config, event_id, event, event_freq_rows, offsets, near_surface_offsets, start, is_sample = task
     projector = LocalProjector(config.region)
     velocity_m_s = config.waveform_array.velocity_km_s * 1000.0
     late_phase_max_delay_s = float(config.waveform_array.late_phase_max_delay_s)
@@ -865,6 +940,8 @@ def _project_event_task(task: tuple[AppConfig, str, dict[str, Any], list[tuple[f
     depth_km = float(event.get("depth_km", 0.0) or 0.0)
     z_m = float(event.get("z_m", depth_km * 1000.0) or 0.0)
     time_utc = str(event.get("time_utc", ""))
+    is_near_surface_event = _is_near_surface_depth(config, depth_km)
+    event_offsets = near_surface_offsets if is_near_surface_event else offsets
     time_bin_index, time_bin_start = _time_bin(time_utc, start, config.waveform_array.time_bin_days)
     for freq, rows in sorted(event_freq_rows, key=lambda item: item[0]):
         stations = _station_rows(rows, projector, config.waveform_array.max_stations_per_event)
@@ -874,7 +951,7 @@ def _project_event_task(task: tuple[AppConfig, str, dict[str, Any], list[tuple[f
         dominant_source = _dominant_source(rows)
         source_weight = _source_weight(config, dominant_source)
         aperture_km = _station_aperture_km(stations)
-        splat_sigma_m = _resolution_sigma_m(config, freq, aperture_km)
+        splat_sigma_m = _resolution_sigma_m(config, freq, aperture_km, depth_km)
         frequency_band = f"{freq:g} Hz point spectrum"
         velocities = _velocity_ensemble(config)
         velocity_model = (
@@ -886,7 +963,7 @@ def _project_event_task(task: tuple[AppConfig, str, dict[str, Any], list[tuple[f
             if config.waveform_array.synthetic_aperture_enabled
             else "delay_and_sum_phase_group_delay_projection"
         )
-        for dx, dy in offsets:
+        for dx, dy in event_offsets:
             coarse_gx = event_x + dx
             coarse_gy = event_y + dy
             (
@@ -907,6 +984,7 @@ def _project_event_task(task: tuple[AppConfig, str, dict[str, Any], list[tuple[f
                 coarse_gy,
                 freq,
                 velocity_m_s,
+                near_surface=is_near_surface_event,
             )
             if config.waveform_array.use_phase and config.waveform_array.use_group_delay:
                 array_coherence = clamp01(phase_coherence * delay_fit)
@@ -1177,6 +1255,10 @@ def build_waveform_array_projection(
         config.waveform_array.projection_radius_km * 1000.0,
         config.waveform_array.projection_grid_km * 1000.0,
     )
+    near_surface_offsets = _candidate_offsets(
+        config.waveform_array.projection_radius_km * 1000.0,
+        config.waveform_array.near_surface_projection_grid_km * 1000.0,
+    )
     projection_rows: list[dict[str, Any]] = []
 
     grouped: dict[str, list[tuple[float, list[dict[str, Any]]]]] = defaultdict(list)
@@ -1185,16 +1267,17 @@ def build_waveform_array_projection(
             grouped[event_id].append((freq, rows))
 
     tasks = [
-        (config, event_id, events[event_id], grouped[event_id], offsets, start, is_sample)
+        (config, event_id, events[event_id], grouped[event_id], offsets, near_surface_offsets, start, is_sample)
         for event_id in event_order
         if grouped.get(event_id)
     ]
     worker_count = _available_worker_count(len(tasks))
     LOGGER.info(
-        "Array projection candidate generation: events=%d frequency_groups=%d offsets=%d workers=%d max_rows=%d",
+        "Array projection candidate generation: events=%d frequency_groups=%d offsets=%d near_surface_offsets=%d workers=%d max_rows=%d",
         len(tasks),
         sum(len(grouped[event_id]) for event_id in event_order if grouped.get(event_id)),
         len(offsets),
+        len(near_surface_offsets),
         worker_count,
         config.waveform_array.max_projection_rows,
     )
@@ -1236,6 +1319,14 @@ def build_waveform_array_projection(
             "depth_velocity_samples": config.waveform_array.depth_velocity_samples,
             "depth_quadrature_samples": config.waveform_array.depth_quadrature_samples,
             "depth_quadrature_min_width_km": config.waveform_array.depth_quadrature_min_width_km,
+            "near_surface_depth_km": config.waveform_array.near_surface_depth_km,
+            "near_surface_projection_grid_km": config.waveform_array.near_surface_projection_grid_km,
+            "near_surface_projection_refinement_fraction": config.waveform_array.near_surface_projection_refinement_fraction,
+            "near_surface_projection_refinement_steps": config.waveform_array.near_surface_projection_refinement_steps,
+            "near_surface_depth_quadrature_samples": config.waveform_array.near_surface_depth_quadrature_samples,
+            "near_surface_depth_quadrature_min_width_km": config.waveform_array.near_surface_depth_quadrature_min_width_km,
+            "near_surface_splat_sigma_vertical_m": config.waveform_array.near_surface_splat_sigma_vertical_m,
+            "near_surface_resolution_sigma_min_m": config.waveform_array.near_surface_resolution_sigma_min_m,
             "projection_refinement_enabled": config.waveform_array.projection_refinement_enabled,
             "projection_refinement_fraction": config.waveform_array.projection_refinement_fraction,
             "projection_refinement_steps": config.waveform_array.projection_refinement_steps,
@@ -1273,6 +1364,14 @@ def build_waveform_array_projection(
             "path_family_counts": _count_values(splat_rows, "path_family"),
             "splat_role_counts": _count_values(splat_rows, "splat_role"),
             "depth_uncertainty_policy": "structure splats use deterministic p05-p50-p95 depth quadrature; sigma_z_m uses resolution unless waveform_array.use_depth_uncertainty_in_splat_sigma=true",
+            "near_surface_depth_km": config.waveform_array.near_surface_depth_km,
+            "near_surface_projection_grid_km": config.waveform_array.near_surface_projection_grid_km,
+            "near_surface_projection_refinement_fraction": config.waveform_array.near_surface_projection_refinement_fraction,
+            "near_surface_projection_refinement_steps": config.waveform_array.near_surface_projection_refinement_steps,
+            "near_surface_depth_quadrature_samples": config.waveform_array.near_surface_depth_quadrature_samples,
+            "near_surface_depth_quadrature_min_width_km": config.waveform_array.near_surface_depth_quadrature_min_width_km,
+            "near_surface_splat_sigma_vertical_m": config.waveform_array.near_surface_splat_sigma_vertical_m,
+            "near_surface_resolution_sigma_min_m": config.waveform_array.near_surface_resolution_sigma_min_m,
             "primitive_depth_metadata_columns": [
                 "depth_uncertainty_km",
                 "depth_uncertainty_z_m",
@@ -1327,6 +1426,14 @@ def build_waveform_array_projection(
         "depth_velocity_samples": config.waveform_array.depth_velocity_samples,
         "depth_quadrature_samples": config.waveform_array.depth_quadrature_samples,
         "depth_quadrature_min_width_km": config.waveform_array.depth_quadrature_min_width_km,
+        "near_surface_depth_km": config.waveform_array.near_surface_depth_km,
+        "near_surface_projection_grid_km": config.waveform_array.near_surface_projection_grid_km,
+        "near_surface_projection_refinement_fraction": config.waveform_array.near_surface_projection_refinement_fraction,
+        "near_surface_projection_refinement_steps": config.waveform_array.near_surface_projection_refinement_steps,
+        "near_surface_depth_quadrature_samples": config.waveform_array.near_surface_depth_quadrature_samples,
+        "near_surface_depth_quadrature_min_width_km": config.waveform_array.near_surface_depth_quadrature_min_width_km,
+        "near_surface_splat_sigma_vertical_m": config.waveform_array.near_surface_splat_sigma_vertical_m,
+        "near_surface_resolution_sigma_min_m": config.waveform_array.near_surface_resolution_sigma_min_m,
         "projection_refinement_enabled": config.waveform_array.projection_refinement_enabled,
         "projection_refinement_fraction": config.waveform_array.projection_refinement_fraction,
         "projection_refinement_steps": config.waveform_array.projection_refinement_steps,
@@ -1450,18 +1557,15 @@ def _build_splats(config: AppConfig, projection_rows: list[dict[str, Any]], is_s
         structure_amplitude_base = clamp01(raw_amplitude * structural_weight)
         array_coherence = clamp01(float(row.get("array_coherence", raw_amplitude) or 0.0))
         sigma_xy = float(row.get("gaussian_splat_sigma_m", config.waveform_array.splat_sigma_horizontal_m) or 0.0)
-        resolution_sigma_z_m = max(
-            float(config.waveform_array.splat_sigma_vertical_m),
-            min(float(config.waveform_array.resolution_sigma_max_m), 0.6 * sigma_xy),
-        )
         depth_uncertainty_z_m = max(0.0, depth_uncertainty_km * 1000.0)
-        sigma_z = (
-            max(resolution_sigma_z_m, depth_uncertainty_z_m)
-            if config.waveform_array.use_depth_uncertainty_in_splat_sigma
-            else resolution_sigma_z_m
-        )
         color_r, color_g, color_b = _primitive_rgb(raw_amplitude, primitive_type)
         for depth_sample_index, depth_sample_count, depth_sample_km, depth_sample_weight, depth_method in depth_samples:
+            resolution_sigma_z_m = _vertical_resolution_sigma_m(config, depth_sample_km, sigma_xy)
+            sigma_z = (
+                max(resolution_sigma_z_m, depth_uncertainty_z_m)
+                if config.waveform_array.use_depth_uncertainty_in_splat_sigma
+                else resolution_sigma_z_m
+            )
             if len(splats) >= config.waveform_array.max_splats:
                 break
             splat_index += 1

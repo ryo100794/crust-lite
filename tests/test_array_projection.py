@@ -12,6 +12,11 @@ from crust_lite.cli import (
 from crust_lite.config import load_config
 from crust_lite.io.parquet import read_sidecar, read_table
 from crust_lite.paths import ProjectPaths
+from crust_lite.processing.array_projection import (
+    _depth_quadrature_points,
+    _resolution_sigma_m,
+    _vertical_resolution_sigma_m,
+)
 
 DEPTH_UNCERTAINTY_COLUMNS = {
     "depth_p05_km",
@@ -130,3 +135,24 @@ def test_sample_waveform_array_projection_outputs(tmp_path: Path) -> None:
     assert meta["uses_group_delay"] is True
     assert meta["not_prediction"] is True
     assert "direct" in meta["projection_type_counts"]
+
+
+def test_near_surface_adaptive_resolution(tmp_path: Path) -> None:
+    cfg = load_config(str(_sample_project(tmp_path)))
+
+    shallow_samples = _depth_quadrature_points(cfg, 1.0, 2.0, 3.0, "reflected", True)
+    deep_samples = _depth_quadrature_points(cfg, 25.0, 30.0, 35.0, "reflected", True)
+
+    assert len(shallow_samples) == cfg.waveform_array.near_surface_depth_quadrature_samples
+    assert len(deep_samples) == cfg.waveform_array.depth_quadrature_samples
+    assert "near_surface" in shallow_samples[0][4]
+    assert "near_surface" not in deep_samples[0][4]
+
+    shallow_sigma_z = _vertical_resolution_sigma_m(cfg, 2.0, 10_000.0)
+    deep_sigma_z = _vertical_resolution_sigma_m(cfg, 40.0, 10_000.0)
+    assert shallow_sigma_z < deep_sigma_z
+    assert shallow_sigma_z >= cfg.waveform_array.near_surface_splat_sigma_vertical_m
+
+    shallow_sigma_xy = _resolution_sigma_m(cfg, 2.0, 50.0, 2.0)
+    deep_sigma_xy = _resolution_sigma_m(cfg, 2.0, 50.0, 40.0)
+    assert shallow_sigma_xy <= deep_sigma_xy

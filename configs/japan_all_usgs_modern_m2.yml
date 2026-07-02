@@ -97,6 +97,14 @@ waveform_array:
   depth_velocity_min_km_s: 2.8
   depth_velocity_max_km_s: 4.6
   depth_velocity_samples: 7
+  near_surface_depth_km: 20.0
+  near_surface_projection_grid_km: 10.0
+  near_surface_projection_refinement_fraction: 0.35
+  near_surface_projection_refinement_steps: 3
+  near_surface_depth_quadrature_samples: 9
+  near_surface_depth_quadrature_min_width_km: 0.1
+  near_surface_splat_sigma_vertical_m: 2500.0
+  near_surface_resolution_sigma_min_m: 1500.0
   projection_refinement_enabled: true
   projection_refinement_fraction: 0.5
   projection_refinement_steps: 1
