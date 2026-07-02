@@ -221,7 +221,7 @@ def _candidate_groups(supports: list[dict[str, Any]], config: AppConfig) -> list
         min_support=int(config.shallow_lineaments.min_support),
     )
     groups: list[tuple[str, list[int]]] = []
-    for label in sorted(set(int(x) for x in labels if int(x) >= 0)):
+    for label in sorted({int(x) for x in labels if int(x) >= 0}):
         indices = [idx for idx, value in enumerate(labels) if int(value) == label]
         if len(indices) >= config.shallow_lineaments.min_support:
             groups.append((f"dbscan_{label:04d}", indices))
