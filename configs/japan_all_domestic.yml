@@ -34,7 +34,7 @@ data_sources:
   use_jshis: true
   use_gnss: true
   use_active_faults: true
-  active_fault_file: data/raw/active_faults/japan_major_active_faults_coarse_seed.geojson
+  active_fault_file: null
   use_waveforms: true
 
 preprocessing:

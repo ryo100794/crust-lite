@@ -63,6 +63,16 @@ class DataSourceConfig:
 
 
 @dataclass(frozen=True)
+class KnownFaultDetailConfig:
+    enabled: bool = True
+    trace_sample_spacing_km: float = 1.0
+    subsegment_length_km: float = 5.0
+    max_trace_points: int = 500_000
+    comparison_max_distance_km: float = 50.0
+    allow_coarse_reference_seed: bool = False
+
+
+@dataclass(frozen=True)
 class WaveformArrayConfig:
     enabled: bool = True
     synthetic_aperture_enabled: bool = True
@@ -202,6 +212,7 @@ class AppConfig:
     data_sources: DataSourceConfig
     resources: ResourceConfig = field(default_factory=ResourceConfig)
     preprocessing: PreprocessingConfig = field(default_factory=PreprocessingConfig)
+    known_fault_detail: KnownFaultDetailConfig = field(default_factory=KnownFaultDetailConfig)
     visualization_3d: Visualization3DConfig = field(default_factory=Visualization3DConfig)
     waveform_array: WaveformArrayConfig = field(default_factory=WaveformArrayConfig)
     shallow_lineaments: ShallowLineamentConfig = field(default_factory=ShallowLineamentConfig)
@@ -243,6 +254,7 @@ def load_config(path: str | Path) -> AppConfig:
         data_sources=cfg.data_sources,
         resources=cfg.resources,
         preprocessing=cfg.preprocessing,
+        known_fault_detail=cfg.known_fault_detail,
         visualization_3d=cfg.visualization_3d,
         waveform_array=cfg.waveform_array,
         shallow_lineaments=cfg.shallow_lineaments,
@@ -260,6 +272,7 @@ def parse_config(raw: dict[str, Any]) -> AppConfig:
     viz_raw = raw.get("visualization_3d", {})
     resources_raw = raw.get("resources", {})
     preprocessing_raw = raw.get("preprocessing", {})
+    known_fault_detail_raw = raw.get("known_fault_detail", {})
     waveform_array_raw = raw.get("waveform_array", {})
     shallow_lineaments_raw = raw.get("shallow_lineaments", {})
     tectonic_model_raw = raw.get("tectonic_model", {})
@@ -313,6 +326,17 @@ def parse_config(raw: dict[str, Any]) -> AppConfig:
         raise ValueError("preprocessing.depth_bin_km must be positive")
     if preprocessing.magnitude_bin <= 0:
         raise ValueError("preprocessing.magnitude_bin must be positive")
+
+
+    known_fault_detail = KnownFaultDetailConfig(**{**KnownFaultDetailConfig().__dict__, **known_fault_detail_raw})
+    if known_fault_detail.trace_sample_spacing_km <= 0:
+        raise ValueError("known_fault_detail.trace_sample_spacing_km must be positive")
+    if known_fault_detail.subsegment_length_km <= 0:
+        raise ValueError("known_fault_detail.subsegment_length_km must be positive")
+    if known_fault_detail.max_trace_points <= 0:
+        raise ValueError("known_fault_detail.max_trace_points must be positive")
+    if known_fault_detail.comparison_max_distance_km <= 0:
+        raise ValueError("known_fault_detail.comparison_max_distance_km must be positive")
 
     viz = Visualization3DConfig(**{**Visualization3DConfig().__dict__, **viz_raw})
     if viz.mode not in {"cumulative", "window"}:
@@ -446,6 +470,7 @@ def parse_config(raw: dict[str, Any]) -> AppConfig:
         ),
         resources=resources,
         preprocessing=preprocessing,
+        known_fault_detail=known_fault_detail,
         waveform_array=waveform_array,
         shallow_lineaments=shallow_lineaments,
         tectonic_model=tectonic_model,

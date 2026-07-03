@@ -215,9 +215,18 @@ gradient score.
 
 ### Active faults
 
-MVP import is local GeoJSON FeatureCollection. Output:
-`data/processed/fault_segment.gpkg`. In minimal mode this path contains GeoJSON
-fallback content with a metadata sidecar.
+Known active faults must come from an explicit source dataset supplied by the
+user or an official extract converted to GeoJSON, GeoPackage, Shapefile, or a
+CSV trace table with `segment_id`, `lon`, and `lat` columns. Output is
+`data/processed/fault_segment.gpkg`. The pipeline does not create known faults.
+
+The bundled `japan_major_active_faults_coarse_seed.geojson` is a reference-only
+software integration seed and is rejected from `fault_segment.gpkg` by default
+because its geometry is not an official trace. In non-sample runs, missing
+`active_fault_file` produces an empty known-fault layer rather than falling back
+to synthetic sample faults. Derived display/reference products such as
+`known_fault_trace_point.parquet` and `known_fault_subsegment.parquet` are
+source-geometry samples only and are not counted as known fault segments.
 
 ### J-SHIS-like layers
 

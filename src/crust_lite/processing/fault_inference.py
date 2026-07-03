@@ -8,6 +8,7 @@ from typing import Any
 import numpy as np
 
 from crust_lite.config import AppConfig
+from crust_lite.data_sources.active_faults import build_known_fault_reference_layers
 from crust_lite.geo import (
     LocalProjector,
     angle_difference_deg,
@@ -481,12 +482,14 @@ def _infer_faults_from_synthetic_aperture_lineaments(config: AppConfig, paths: P
             "max_features": max_features,
         },
     )
+    known_reference = build_known_fault_reference_layers(config, paths)
     LOGGER.info("Inferred %d synthetic-aperture fault candidates", len(features))
     return {
         "inferred_fault_count": len(features),
         "is_sample_data": is_sample,
         "method": "synthetic_aperture_shallow_lineament_to_fault_candidates",
         "source_table": str(lineament_path),
+        "known_fault_reference_layers": known_reference,
     }
 
 
@@ -632,6 +635,7 @@ def infer_faults(config: AppConfig, paths: ProjectPaths) -> dict[str, Any]:
             **selection_stats,
         },
     )
+    known_reference = build_known_fault_reference_layers(config, paths)
     LOGGER.info(
         "Inferred %d candidate fault segments from %d raw candidates",
         len(features),
@@ -640,5 +644,6 @@ def infer_faults(config: AppConfig, paths: ProjectPaths) -> dict[str, Any]:
     return {
         "inferred_fault_count": len(features),
         "is_sample_data": is_sample,
+        "known_fault_reference_layers": known_reference,
         **selection_stats,
     }

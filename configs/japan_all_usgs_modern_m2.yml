@@ -36,7 +36,7 @@ data_sources:
   use_jshis: false
   use_gnss: false
   use_active_faults: true
-  active_fault_file: data/raw/active_faults/japan_major_active_faults_coarse_seed.geojson
+  active_fault_file: null
   use_waveforms: true
   waveform_spectra_csv: data/raw/waveforms/combined/japan_all_2000_2026_m50_spectra.csv
   waveform_feature_csv: data/raw/waveforms/combined/japan_all_2000_2026_m50_waveform_features.csv
