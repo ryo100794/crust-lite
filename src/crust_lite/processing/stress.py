@@ -50,12 +50,37 @@ def _cutde_available() -> bool:
         return False
 
 
+def _finite_float(value: Any, default: float | None = None) -> float | None:
+    if value in (None, ""):
+        return default
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    return number if math.isfinite(number) else default
+
+
+def _feature_depth_km(props: dict[str, Any]) -> float:
+    center = _finite_float(props.get("center_depth_km"))
+    if center is not None:
+        return max(0.0, center)
+    top = _finite_float(props.get("top_depth_km"))
+    bottom = _finite_float(props.get("bottom_depth_km"))
+    if top is not None and bottom is not None:
+        return max(0.0, (top + bottom) / 2.0)
+    if bottom is not None:
+        return max(0.0, bottom / 2.0)
+    if top is not None:
+        return max(0.0, top)
+    return 5.0
+
+
 def _feature_center(feature: dict[str, Any]) -> tuple[float, float, float]:
     props = feature.get("properties", {})
     return (
-        float(props.get("center_x_m", 0.0)),
-        float(props.get("center_y_m", 0.0)),
-        float(props.get("center_depth_km", props.get("bottom_depth_km", 10.0) / 2.0)) * 1000.0,
+        _finite_float(props.get("center_x_m"), 0.0) or 0.0,
+        _finite_float(props.get("center_y_m"), 0.0) or 0.0,
+        _feature_depth_km(props) * 1000.0,
     )
 
 

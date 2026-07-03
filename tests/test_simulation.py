@@ -12,6 +12,7 @@ from crust_lite.cli import (
 from crust_lite.config import load_config
 from crust_lite.io.parquet import read_table
 from crust_lite.paths import ProjectPaths
+from crust_lite.processing.stress import _feature_center
 from tests.helpers import isolated_project
 
 
@@ -39,3 +40,18 @@ def test_simulation_columns(tmp_path) -> None:
         "simulation_notes",
     }
     assert expected.issubset(rows[0])
+
+def test_stress_feature_center_handles_missing_known_fault_depth() -> None:
+    center = _feature_center(
+        {
+            "properties": {
+                "segment_id": "known_without_depth",
+                "center_x_m": 1.0,
+                "center_y_m": 2.0,
+                "center_depth_km": None,
+                "bottom_depth_km": None,
+            }
+        }
+    )
+
+    assert center == (1.0, 2.0, 5000.0)
