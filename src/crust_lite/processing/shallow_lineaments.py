@@ -347,8 +347,14 @@ def _spectral_lineaments(supports: list[dict[str, Any]], config: AppConfig) -> l
             )
             if lineament is not None:
                 rows.append(lineament)
-    rows.sort(key=lambda row: (float(row["confidence"]), float(row["length_km"]), int(row["n_support"])), reverse=True)
-    return _dedupe_lineaments(rows, config, same_frequency=True)[: int(config.shallow_lineaments.max_lineaments)]
+    rows.sort(key=_lineament_rank_key, reverse=True)
+    return _coverage_balanced_lineaments(
+        rows,
+        config,
+        same_frequency=True,
+        max_rows=int(config.shallow_lineaments.max_lineaments),
+        table_role="frequency_resolved",
+    )
 
 
 def _dedupe_lineaments(rows: list[dict[str, Any]], config: AppConfig, same_frequency: bool) -> list[dict[str, Any]]:
@@ -369,11 +375,94 @@ def _dedupe_lineaments(rows: list[dict[str, Any]], config: AppConfig, same_frequ
     return kept
 
 
+def _lineament_rank_key(row: dict[str, Any]) -> tuple[float, float, float, float]:
+    return (
+        float(row.get("confidence", 0.0)),
+        float(row.get("frequency_count", row.get("band_count", row.get("spectral_support_count", 1.0)))),
+        float(row.get("length_km", 0.0)),
+        float(row.get("n_support", 0.0)),
+    )
+
+
+def _lineament_tile_key(row: dict[str, Any], origin_x_m: float, origin_y_m: float, tile_km: float) -> tuple[int, int]:
+    tile_m = max(1.0, tile_km * 1000.0)
+    return (
+        int(math.floor((float(row["center_x_m"]) - origin_x_m) / tile_m)),
+        int(math.floor((float(row["center_y_m"]) - origin_y_m) / tile_m)),
+    )
+
+
+def _coverage_balanced_lineaments(
+    rows: list[dict[str, Any]],
+    config: AppConfig,
+    *,
+    same_frequency: bool,
+    max_rows: int,
+    table_role: str,
+) -> list[dict[str, Any]]:
+    ranked = _dedupe_lineaments(sorted(rows, key=_lineament_rank_key, reverse=True), config, same_frequency=same_frequency)
+    if len(ranked) <= max_rows:
+        for row in ranked:
+            row["selection_method"] = "score_ranked_no_decimation"
+        return ranked
+
+    tile_km = max(50.0, float(config.shallow_lineaments.tile_km) * 3.0)
+    origin_x_m = min(float(row["center_x_m"]) for row in ranked)
+    origin_y_m = min(float(row["center_y_m"]) for row in ranked)
+    buckets: dict[tuple[int, int], list[dict[str, Any]]] = defaultdict(list)
+    for row in ranked:
+        buckets[_lineament_tile_key(row, origin_x_m, origin_y_m, tile_km)].append(row)
+
+    selected: list[dict[str, Any]] = []
+    selected_ids: set[str] = set()
+    sorted_tiles = sorted(buckets.items(), key=lambda item: _lineament_rank_key(item[1][0]), reverse=True)
+    per_tile_passes = 2 if max_rows >= max(2, len(sorted_tiles) * 2) else 1
+    for pass_idx in range(per_tile_passes):
+        for tile_key, tile_rows in sorted_tiles:
+            if len(selected) >= max_rows:
+                break
+            if pass_idx >= len(tile_rows):
+                continue
+            row = tile_rows[pass_idx]
+            row_id = str(row.get("lineament_id", id(row)))
+            if row_id in selected_ids:
+                continue
+            row["selection_method"] = "spatial_coverage_balanced_top_score"
+            row["selection_tile_km"] = tile_km
+            row["selection_tile_key"] = f"{tile_key[0]},{tile_key[1]}"
+            row["selection_table_role"] = table_role
+            selected.append(row)
+            selected_ids.add(row_id)
+
+    for row in ranked:
+        if len(selected) >= max_rows:
+            break
+        row_id = str(row.get("lineament_id", id(row)))
+        if row_id in selected_ids:
+            continue
+        tile_key = _lineament_tile_key(row, origin_x_m, origin_y_m, tile_km)
+        row["selection_method"] = "spatial_coverage_balanced_score_fill"
+        row["selection_tile_km"] = tile_km
+        row["selection_tile_key"] = f"{tile_key[0]},{tile_key[1]}"
+        row["selection_table_role"] = table_role
+        selected.append(row)
+        selected_ids.add(row_id)
+    selected.sort(key=_lineament_rank_key, reverse=True)
+    return selected
+
+
 def _integrated_lineaments(spectral_rows: list[dict[str, Any]], config: AppConfig) -> list[dict[str, Any]]:
-    bases = _dedupe_lineaments(spectral_rows, config, same_frequency=False)
+    max_lineaments = int(config.shallow_lineaments.max_lineaments)
+    bases = _coverage_balanced_lineaments(
+        spectral_rows,
+        config,
+        same_frequency=False,
+        max_rows=max_lineaments,
+        table_role="integration_base",
+    )
     integrated: list[dict[str, Any]] = []
     radius_km = max(3.0, min(20.0, float(config.shallow_lineaments.cluster_eps_km)))
-    for idx, base in enumerate(bases[: int(config.shallow_lineaments.max_lineaments)]):
+    for idx, base in enumerate(bases):
         related = []
         for row in spectral_rows:
             d_km = math.hypot(float(base["center_x_m"]) - float(row["center_x_m"]), float(base["center_y_m"]) - float(row["center_y_m"])) / 1000.0
@@ -424,8 +513,14 @@ def _integrated_lineaments(spectral_rows: list[dict[str, Any]], config: AppConfi
             }
         )
         integrated.append(row_out)
-    integrated.sort(key=lambda row: (float(row["confidence"]), float(row["frequency_count"]), float(row["length_km"])), reverse=True)
-    return integrated[: int(config.shallow_lineaments.max_lineaments)]
+    integrated.sort(key=_lineament_rank_key, reverse=True)
+    return _coverage_balanced_lineaments(
+        integrated,
+        config,
+        same_frequency=False,
+        max_rows=max_lineaments,
+        table_role="integrated_summary",
+    )
 
 
 def build_shallow_lineaments(config: AppConfig, paths: ProjectPaths) -> dict[str, Any]:
@@ -463,6 +558,8 @@ def build_shallow_lineaments(config: AppConfig, paths: ProjectPaths) -> dict[str
         "min_support": config.shallow_lineaments.min_support,
         "cluster_eps_km": config.shallow_lineaments.cluster_eps_km,
         "max_dbscan_rows": config.shallow_lineaments.max_dbscan_rows,
+        "lineament_selection_method": "spatial_coverage_balanced_top_score_then_score_fill",
+        "lineament_selection_tile_km": max(50.0, float(config.shallow_lineaments.tile_km) * 3.0),
         "is_sample_data": is_sample,
         "requires_synthetic_aperture_source": True,
         "not_prediction": True,

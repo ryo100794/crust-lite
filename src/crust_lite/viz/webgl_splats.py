@@ -487,9 +487,26 @@ def _score_color(value: float) -> list[float]:
     return [0.65 + 0.35 * f, 0.90 - 0.18 * f, 0.30 - 0.12 * f]
 
 
-def _fault_type_color(is_inferred: bool) -> list[float]:
-    # Known faults are cyan-blue; inferred candidates are orange.
-    return [1.0, 0.61, 0.16] if is_inferred else [0.24, 0.72, 1.0]
+def _fault_display_role(props: dict[str, Any]) -> str:
+    role = str(props.get("_display_role", "")).strip().lower()
+    if role in {"known", "reference", "inferred"}:
+        return role
+    if _fault_is_inferred(props):
+        return "inferred"
+    policy = str(props.get("known_fault_data_policy", "")).strip().lower()
+    source_quality = str(props.get("source_quality", "")).strip().lower()
+    if _boolish(props.get("is_reference_only")) or policy == "reference_only_not_known_fault" or "coarse" in source_quality:
+        return "reference"
+    return "known"
+
+
+def _fault_type_color(role: str) -> list[float]:
+    # Official known faults are cyan-blue, reference-only traces are pale blue-gray, inferred candidates are orange.
+    if role == "inferred":
+        return [1.0, 0.61, 0.16]
+    if role == "reference":
+        return [0.62, 0.78, 0.86]
+    return [0.24, 0.72, 1.0]
 
 
 def _comparison_color(distance_km: float) -> list[float]:
@@ -497,10 +514,28 @@ def _comparison_color(distance_km: float) -> list[float]:
     return [1.0, 0.95 - 0.35 * t, 0.18 + 0.10 * t]
 
 
-def _read_fault_features(paths: ProjectPaths) -> tuple[list[dict[str, Any]], int, int]:
-    known = read_features(paths.data_processed / "fault_segment.gpkg") if (paths.data_processed / "fault_segment.gpkg").exists() else []
-    inferred = read_features(paths.data_processed / "inferred_faults.gpkg") if (paths.data_processed / "inferred_faults.gpkg").exists() else []
-    return [*known, *inferred], len(known), len(inferred)
+def _tag_fault_features(features: list[dict[str, Any]], role: str) -> list[dict[str, Any]]:
+    tagged: list[dict[str, Any]] = []
+    for feature in features:
+        item = dict(feature)
+        props = dict(item.get("properties", {}) if isinstance(item.get("properties", {}), dict) else {})
+        props["_display_role"] = role
+        if role == "reference":
+            props["is_reference_only"] = True
+            props.setdefault("known_fault_data_policy", "reference_only_not_known_fault")
+        item["properties"] = props
+        tagged.append(item)
+    return tagged
+
+
+def _read_fault_features(paths: ProjectPaths) -> tuple[list[dict[str, Any]], int, int, int]:
+    known_path = paths.data_processed / "fault_segment.gpkg"
+    reference_path = paths.data_processed / "reference_fault_segment.gpkg"
+    inferred_path = paths.data_processed / "inferred_faults.gpkg"
+    known = _tag_fault_features(read_features(known_path), "known") if known_path.exists() else []
+    reference = _tag_fault_features(read_features(reference_path), "reference") if reference_path.exists() else []
+    inferred = _tag_fault_features(read_features(inferred_path), "inferred") if inferred_path.exists() else []
+    return [*known, *reference, *inferred], len(known), len(inferred), len(reference)
 
 
 def _point_segment_distance_m(x: np.ndarray, y: np.ndarray, ax: float, ay: float, bx: float, by: float) -> np.ndarray:
@@ -572,6 +607,8 @@ def _fault_wave_interaction_rows(
                 "segment_id": _fault_segment_id(feature, index),
                 "source": str(props.get("source", "unknown")),
                 "is_inferred": _fault_is_inferred(props),
+                "display_role": _fault_display_role(props),
+                "is_reference_only": _fault_display_role(props) == "reference",
                 "raw_wave_interaction_score": raw_score,
                 "wave_interaction_score": 0.0,
                 "near_splat_count": int(np.count_nonzero(near)),
@@ -599,23 +636,21 @@ def _is_regional_sheet_fault(feature: dict[str, Any]) -> bool:
 
 
 def _faults_payload(config: AppConfig, paths: ProjectPaths, rows: list[dict[str, Any]]) -> dict[str, Any]:
-    features, known_count, inferred_count = _read_fault_features(paths)
+    features, known_count, inferred_count, reference_count = _read_fault_features(paths)
     broad_features = [feature for feature in features if _is_regional_sheet_fault(feature)]
     regional_features = [feature for feature in features if not _is_regional_sheet_fault(feature)]
     display_features = regional_features or features
     if len(display_features) > config.visualization_3d.max_fault_segments:
-        known_display = [
-            feature
-            for feature in display_features
-            if not _fault_is_inferred(feature.get("properties", {}))
-        ]
-        inferred_display = [
-            feature
-            for feature in display_features
-            if _fault_is_inferred(feature.get("properties", {}))
-        ]
+        known_display = [feature for feature in display_features if _fault_display_role(feature.get("properties", {})) == "known"]
+        reference_display = [feature for feature in display_features if _fault_display_role(feature.get("properties", {})) == "reference"]
+        inferred_display = [feature for feature in display_features if _fault_display_role(feature.get("properties", {})) == "inferred"]
         known_display = sorted(
             known_display,
+            key=lambda feature: _safe_float(feature.get("properties", {}).get("confidence", 0.0)),
+            reverse=True,
+        )
+        reference_display = sorted(
+            reference_display,
             key=lambda feature: _safe_float(feature.get("properties", {}).get("confidence", 0.0)),
             reverse=True,
         )
@@ -630,10 +665,14 @@ def _faults_payload(config: AppConfig, paths: ProjectPaths, rows: list[dict[str,
             reverse=True,
         )
         max_faults = max(1, int(config.visualization_3d.max_fault_segments))
+        reference_quota = min(len(reference_display), max(1, max_faults // 5)) if reference_display else 0
         if len(known_display) >= max_faults:
             display_features = known_display[:max_faults]
         else:
-            display_features = [*known_display, *inferred_display[: max_faults - len(known_display)]]
+            remaining = max_faults - len(known_display)
+            reference_kept = reference_display[: min(reference_quota, remaining)]
+            remaining -= len(reference_kept)
+            display_features = [*known_display, *reference_kept, *inferred_display[:remaining]]
     interaction = _fault_wave_interaction_rows(config, display_features, rows)
     interaction_by_id = {row["segment_id"]: row for row in interaction}
     if interaction:
@@ -644,6 +683,7 @@ def _faults_payload(config: AppConfig, paths: ProjectPaths, rows: list[dict[str,
                 "method": "relative_late_phase_splat_density_near_fault_traces",
                 "known_fault_count": known_count,
                 "inferred_fault_count": inferred_count,
+                "reference_fault_count": reference_count,
                 "fault_count": len(display_features),
                 "total_fault_count": len(features),
                 "broad_regional_sheet_faults_excluded": len(broad_features),
@@ -664,6 +704,12 @@ def _faults_payload(config: AppConfig, paths: ProjectPaths, rows: list[dict[str,
     known_mesh_positions: list[float] = []
     known_mesh_colors: list[float] = []
     known_mesh_type_colors: list[float] = []
+    reference_line_positions: list[float] = []
+    reference_line_colors: list[float] = []
+    reference_line_type_colors: list[float] = []
+    reference_mesh_positions: list[float] = []
+    reference_mesh_colors: list[float] = []
+    reference_mesh_type_colors: list[float] = []
     inferred_line_positions: list[float] = []
     inferred_line_colors: list[float] = []
     inferred_line_type_colors: list[float] = []
@@ -676,33 +722,52 @@ def _faults_payload(config: AppConfig, paths: ProjectPaths, rows: list[dict[str,
     known_centers: list[tuple[str, float, float, float]] = []
     for index, feature in enumerate(display_features):
         props = feature.get("properties", {}) if isinstance(feature.get("properties", {}), dict) else {}
-        if not _fault_is_inferred(props):
+        if _fault_display_role(props) == "known":
             cx, cy = _fault_center_xy(feature, projector)
             known_centers.append((_fault_segment_id(feature, index), cx, cy, _fault_depth_center_km(props)))
 
     displayed_known_count = 0
+    displayed_reference_count = 0
     displayed_inferred_count = 0
     comparison_link_count = 0
     comparison_max_distance_km = 50.0
     for index, feature in enumerate(display_features):
         props = feature.get("properties", {}) if isinstance(feature.get("properties", {}), dict) else {}
         segment_id = _fault_segment_id(feature, index)
-        is_inferred = _fault_is_inferred(props)
-        if is_inferred:
+        role = _fault_display_role(props)
+        is_inferred = role == "inferred"
+        if role == "inferred":
             displayed_inferred_count += 1
+        elif role == "reference":
+            displayed_reference_count += 1
         else:
             displayed_known_count += 1
         score = _safe_float(interaction_by_id.get(segment_id, {}).get("wave_interaction_score", 0.0))
         color = _score_color(score)
-        type_color = _fault_type_color(is_inferred)
+        type_color = _fault_type_color(role)
         trace = _fault_trace_xy(feature, projector)
         center_depth_m = _fault_depth_center_km(props) * 1000.0
-        target_line_positions = inferred_line_positions if is_inferred else known_line_positions
-        target_line_colors = inferred_line_colors if is_inferred else known_line_colors
-        target_line_type_colors = inferred_line_type_colors if is_inferred else known_line_type_colors
-        target_mesh_positions = inferred_mesh_positions if is_inferred else known_mesh_positions
-        target_mesh_colors = inferred_mesh_colors if is_inferred else known_mesh_colors
-        target_mesh_type_colors = inferred_mesh_type_colors if is_inferred else known_mesh_type_colors
+        if role == "inferred":
+            target_line_positions = inferred_line_positions
+            target_line_colors = inferred_line_colors
+            target_line_type_colors = inferred_line_type_colors
+            target_mesh_positions = inferred_mesh_positions
+            target_mesh_colors = inferred_mesh_colors
+            target_mesh_type_colors = inferred_mesh_type_colors
+        elif role == "reference":
+            target_line_positions = reference_line_positions
+            target_line_colors = reference_line_colors
+            target_line_type_colors = reference_line_type_colors
+            target_mesh_positions = reference_mesh_positions
+            target_mesh_colors = reference_mesh_colors
+            target_mesh_type_colors = reference_mesh_type_colors
+        else:
+            target_line_positions = known_line_positions
+            target_line_colors = known_line_colors
+            target_line_type_colors = known_line_type_colors
+            target_mesh_positions = known_mesh_positions
+            target_mesh_colors = known_mesh_colors
+            target_mesh_type_colors = known_mesh_type_colors
         if len(trace) >= 2:
             for a, b in zip(trace, trace[1:], strict=False):
                 z = -1.0 * center_depth_m * vertical
@@ -754,6 +819,8 @@ def _faults_payload(config: AppConfig, paths: ProjectPaths, rows: list[dict[str,
             {
                 "segment_id": segment_id,
                 "is_inferred": is_inferred,
+                "display_role": role,
+                "is_reference_only": role == "reference",
                 "source": str(props.get("source", "unknown")),
                 "wave_interaction_score": score,
                 "near_splat_count": interaction_by_id.get(segment_id, {}).get("near_splat_count", 0),
@@ -774,6 +841,12 @@ def _faults_payload(config: AppConfig, paths: ProjectPaths, rows: list[dict[str,
         "known_mesh_positions": known_mesh_positions,
         "known_mesh_colors": known_mesh_colors,
         "known_mesh_type_colors": known_mesh_type_colors,
+        "reference_line_positions": reference_line_positions,
+        "reference_line_colors": reference_line_colors,
+        "reference_line_type_colors": reference_line_type_colors,
+        "reference_mesh_positions": reference_mesh_positions,
+        "reference_mesh_colors": reference_mesh_colors,
+        "reference_mesh_type_colors": reference_mesh_type_colors,
         "inferred_line_positions": inferred_line_positions,
         "inferred_line_colors": inferred_line_colors,
         "inferred_line_type_colors": inferred_line_type_colors,
@@ -785,13 +858,16 @@ def _faults_payload(config: AppConfig, paths: ProjectPaths, rows: list[dict[str,
         "labels": labels,
         "known_fault_count": known_count,
         "inferred_fault_count": inferred_count,
+        "reference_fault_count": reference_count,
         "displayed_known_fault_count": displayed_known_count,
+        "displayed_reference_fault_count": displayed_reference_count,
         "displayed_inferred_fault_count": displayed_inferred_count,
         "displayed_fault_count": len(display_features),
         "total_fault_count": len(features),
         "comparison_link_count": comparison_link_count,
         "comparison_link_max_distance_km": comparison_max_distance_km,
-        "comparison_semantics": "yellow links connect inferred candidate centers to nearest displayed known active-fault center within 50 km",
+        "comparison_semantics": "yellow links connect inferred candidate centers to nearest displayed official known active-fault center within 50 km; reference-only traces are shown for context but are not used as official known faults",
+        "reference_fault_semantics": "reference-only traces are displayed separately and are not counted or scored as official known active faults",
         "broad_regional_sheet_faults_excluded": len(broad_features),
         "regional_fault_filter": "exclude inferred PCA sheets with length_km>800 or width_km>300 from default fault-wave overlay",
         "interaction_rows": interaction,
@@ -1011,7 +1087,8 @@ def _webgl_html(payload: dict[str, Any]) -> str:
     <label><input id="outlineToggle" type="checkbox" checked>日本列島輪郭</label>
     <label><input id="plateBoundaryToggle" type="checkbox">プレート境界</label>
     <label><input id="plateInterfaceToggle" type="checkbox">スラブ/境界線</label>
-    <label><input id="knownFaultToggle" type="checkbox" checked>既知活断層</label>
+    <label><input id="knownFaultToggle" type="checkbox" checked>公式既知活断層</label>
+    <label><input id="referenceFaultToggle" type="checkbox" checked>参考断層</label>
     <label><input id="inferredFaultToggle" type="checkbox" checked>推定断層候補</label>
     <label><input id="comparisonLineToggle" type="checkbox" checked>近接比較線</label>
     <label><input id="faultSurfaceToggle" type="checkbox">断層面</label>
@@ -1019,9 +1096,9 @@ def _webgl_html(payload: dict[str, Any]) -> str:
   </div>
   <div>
     <label>断層色 <select id="faultColorMode"><option value="1" selected>既知/推定</option><option value="0">波動相互作用スコア</option></select></label>
-    <span><span class="swatch" style="background:#3db8ff"></span>既知 <span class="swatch" style="background:#ff9c29"></span>推定 <span class="swatch" style="background:#fff238"></span>近接比較線</span>
+    <span><span class="swatch" style="background:#3db8ff"></span>公式既知 <span class="swatch" style="background:#9ec7db"></span>参考 <span class="swatch" style="background:#ff9c29"></span>推定 <span class="swatch" style="background:#fff238"></span>近接比較線</span>
   </div>
-  <div>断層比較: 既知活断層=青、推定断層候補=橙、近接比較線=黄。色は波動相互作用スコアにも切替可能です。</div>
+  <div>断層比較: 公式既知活断層=青、参考断層（非公式/粗い）=灰青、推定断層候補=橙、近接比較線=黄。色は波動相互作用スコアにも切替可能です。</div>
   <div id="plateOverlayNote"></div>
   <div>z軸注意: 波形そのものは深度を直接観測しません。表示深度は不確実性を含む計算上の中心です。</div>
   <div>
@@ -1038,7 +1115,7 @@ const gl = canvas.getContext('webgl2', {{antialias: true, alpha: false}});
 if (!gl) throw new Error('WebGL2 is required');
 const depthUncertainty = payload.metadata.depth_diagnostics.uncertainty || {{rows_with_complete_p05_p50_p95: 0}};
 document.getElementById('stats').textContent =
-  `スプラット=${{payload.metadata.displayed_splats}} / 既知=${{payload.faults.displayed_known_fault_count}} / 推定=${{payload.faults.displayed_inferred_fault_count}} / 比較線=${{payload.faults.comparison_link_count}} / 深度p05-p95行=${{depthUncertainty.rows_with_complete_p05_p50_p95}} / 日本輪郭点=${{payload.terrain.outline_vertices}}`;
+  `スプラット=${{payload.metadata.displayed_splats}} / 公式既知=${{payload.faults.displayed_known_fault_count}} / 参考=${{payload.faults.displayed_reference_fault_count}} / 推定=${{payload.faults.displayed_inferred_fault_count}} / 比較線=${{payload.faults.comparison_link_count}} / 深度p05-p95行=${{depthUncertainty.rows_with_complete_p05_p50_p95}} / 日本輪郭点=${{payload.terrain.outline_vertices}}`;
 document.getElementById('plateOverlayNote').textContent = payload.metadata.tectonic_overlay_note;
 
 function shader(type, src) {{
@@ -1161,10 +1238,14 @@ function coloredObject(positions, colors) {{
 }}
 const knownFaultLinesScore = coloredObject(payload.faults.known_line_positions || [], payload.faults.known_line_colors || []);
 const knownFaultLinesType = coloredObject(payload.faults.known_line_positions || [], payload.faults.known_line_type_colors || []);
+const referenceFaultLinesScore = coloredObject(payload.faults.reference_line_positions || [], payload.faults.reference_line_colors || []);
+const referenceFaultLinesType = coloredObject(payload.faults.reference_line_positions || [], payload.faults.reference_line_type_colors || []);
 const inferredFaultLinesScore = coloredObject(payload.faults.inferred_line_positions || [], payload.faults.inferred_line_colors || []);
 const inferredFaultLinesType = coloredObject(payload.faults.inferred_line_positions || [], payload.faults.inferred_line_type_colors || []);
 const knownFaultSurfacesScore = coloredObject(payload.faults.known_mesh_positions || [], payload.faults.known_mesh_colors || []);
 const knownFaultSurfacesType = coloredObject(payload.faults.known_mesh_positions || [], payload.faults.known_mesh_type_colors || []);
+const referenceFaultSurfacesScore = coloredObject(payload.faults.reference_mesh_positions || [], payload.faults.reference_mesh_colors || []);
+const referenceFaultSurfacesType = coloredObject(payload.faults.reference_mesh_positions || [], payload.faults.reference_mesh_type_colors || []);
 const inferredFaultSurfacesScore = coloredObject(payload.faults.inferred_mesh_positions || [], payload.faults.inferred_mesh_colors || []);
 const inferredFaultSurfacesType = coloredObject(payload.faults.inferred_mesh_positions || [], payload.faults.inferred_mesh_type_colors || []);
 const comparisonLines = coloredObject(payload.faults.comparison_line_positions || [], payload.faults.comparison_line_colors || []);
@@ -1197,7 +1278,7 @@ function lookAt(eye, target, up) {{
   return o;
 }}
 let yaw=0.72, pitch=0.46, dist=3.2, pan=[0,0,0];
-let visible=[1,1,1,1], depthVisible=[1,1,1,1], roleVisible=[0,1,0,1], showTerrain=false, showOutlines=true, showPlateBoundaries=Boolean(payload.tectonics.default_show), showPlateInterfaces=Boolean(payload.tectonics.default_show), showKnownFaults=true, showInferredFaults=true, showComparisonLinks=true, showFaultSurfaces=false, showLines=false, splatScale=1.45, opacityScale=1.0, colorMode=0, faultColorMode=1;
+let visible=[1,1,1,1], depthVisible=[1,1,1,1], roleVisible=[0,1,0,1], showTerrain=false, showOutlines=true, showPlateBoundaries=Boolean(payload.tectonics.default_show), showPlateInterfaces=Boolean(payload.tectonics.default_show), showKnownFaults=true, showReferenceFaults=true, showInferredFaults=true, showComparisonLinks=true, showFaultSurfaces=false, showLines=false, splatScale=1.45, opacityScale=1.0, colorMode=0, faultColorMode=1;
 const pointers = new Map();
 let lastCentroid = null, lastPinchDistance = 0, lastPointer = null, panning = false;
 function mvp() {{
@@ -1265,9 +1346,11 @@ function render() {{
   }}
   if (showFaultSurfaces) {{
     if (showKnownFaults) drawColoredTriangles(faultObject(knownFaultSurfacesScore, knownFaultSurfacesType), 0.18);
+    if (showReferenceFaults) drawColoredTriangles(faultObject(referenceFaultSurfacesScore, referenceFaultSurfacesType), 0.12);
     if (showInferredFaults) drawColoredTriangles(faultObject(inferredFaultSurfacesScore, inferredFaultSurfacesType), 0.18);
   }}
   if (showKnownFaults) drawColoredLines(faultObject(knownFaultLinesScore, knownFaultLinesType), 0.96);
+  if (showReferenceFaults) drawColoredLines(faultObject(referenceFaultLinesScore, referenceFaultLinesType), 0.78);
   if (showInferredFaults) drawColoredLines(faultObject(inferredFaultLinesScore, inferredFaultLinesType), 0.88);
   if (showComparisonLinks) drawColoredLines(comparisonLines, 0.82);
   if (showLines) {{
@@ -1338,6 +1421,7 @@ document.getElementById('plateInterfaceToggle').checked = showPlateInterfaces;
 document.getElementById('plateBoundaryToggle').addEventListener('change', e => {{ showPlateBoundaries=e.target.checked; render(); }});
 document.getElementById('plateInterfaceToggle').addEventListener('change', e => {{ showPlateInterfaces=e.target.checked; render(); }});
 document.getElementById('knownFaultToggle').addEventListener('change', e => {{ showKnownFaults=e.target.checked; render(); }});
+document.getElementById('referenceFaultToggle').addEventListener('change', e => {{ showReferenceFaults=e.target.checked; render(); }});
 document.getElementById('inferredFaultToggle').addEventListener('change', e => {{ showInferredFaults=e.target.checked; render(); }});
 document.getElementById('comparisonLineToggle').addEventListener('change', e => {{ showComparisonLinks=e.target.checked; render(); }});
 document.getElementById('faultSurfaceToggle').addEventListener('change', e => {{ showFaultSurfaces=e.target.checked; render(); }});
@@ -1429,17 +1513,21 @@ def write_webgl_splat_preview(config: AppConfig, paths: ProjectPaths, rows: list
         ),
         "fault_overlay_known_count": faults["known_fault_count"],
         "fault_overlay_inferred_count": faults["inferred_fault_count"],
+        "fault_overlay_reference_count": faults["reference_fault_count"],
         "fault_overlay_displayed_count": faults["displayed_fault_count"],
         "fault_overlay_displayed_known_count": faults["displayed_known_fault_count"],
+        "fault_overlay_displayed_reference_count": faults["displayed_reference_fault_count"],
         "fault_overlay_displayed_inferred_count": faults["displayed_inferred_fault_count"],
         "fault_comparison_link_count": faults["comparison_link_count"],
-        "fault_comparison_display": "known_active_faults_blue_vs_inferred_candidates_orange_with_nearest_known_links",
+        "fault_comparison_display": "official_known_active_faults_blue_reference_only_traces_blue_gray_inferred_candidates_orange_with_nearest_official_known_links",
+        "active_fault_reference_status": "reference_only_fault_layer_loaded" if faults["reference_fault_count"] else "no_reference_only_fault_layer",
         "fault_wave_interaction_method": faults["wave_interaction_method"],
         "fault_wave_interaction_rows": len(faults["interaction_rows"]),
         "fault_overlay_total_count": faults["total_fault_count"],
         "fault_overlay_broad_regional_sheet_excluded_count": faults["broad_regional_sheet_faults_excluded"],
         "regional_fault_filter": faults["regional_fault_filter"],
         "active_fault_data_status": "known_active_faults_loaded" if faults["known_fault_count"] else "no_known_active_fault_layer_loaded_in_current_run",
+        "active_fault_display_policy": "reference-only traces are visual context only and are not counted as official known active faults",
         "sample_lightweight_rendering": is_sample,
         "rendering": "WebGL2 high-density point-sprite Gaussian splats with outline-only Japan context; not Plotly mesh ellipsoids",
         "not_prediction": True,

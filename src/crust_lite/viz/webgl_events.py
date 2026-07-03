@@ -44,17 +44,67 @@ def _select_events(events: list[dict[str, Any]], max_events: int) -> tuple[list[
     return sorted(selected.values(), key=lambda row: str(row.get("time_utc", ""))), "magnitude_top_and_latest"
 
 
+def _boolish(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y"}
+    return bool(value)
+
+
+def _fault_is_inferred(props: dict[str, Any]) -> bool:
+    value = props.get("is_inferred", False)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y"}
+    return bool(value)
+
+
+def _fault_display_role(props: dict[str, Any]) -> str:
+    role = str(props.get("_display_role", "")).strip().lower()
+    if role in {"known", "reference", "inferred"}:
+        return role
+    if _fault_is_inferred(props):
+        return "inferred"
+    policy = str(props.get("known_fault_data_policy", "")).strip().lower()
+    source_quality = str(props.get("source_quality", "")).strip().lower()
+    if _boolish(props.get("is_reference_only")) or policy == "reference_only_not_known_fault" or "coarse" in source_quality:
+        return "reference"
+    return "known"
+
+
+def _tag_fault_features(features: list[dict[str, Any]], role: str) -> list[dict[str, Any]]:
+    tagged: list[dict[str, Any]] = []
+    for feature in features:
+        item = dict(feature)
+        props = dict(item.get("properties", {}) if isinstance(item.get("properties", {}), dict) else {})
+        props["_display_role"] = role
+        if role == "reference":
+            props["is_reference_only"] = True
+            props.setdefault("known_fault_data_policy", "reference_only_not_known_fault")
+        item["properties"] = props
+        tagged.append(item)
+    return tagged
+
+
 def _limit_faults(features: list[dict[str, Any]], max_faults: int) -> tuple[list[dict[str, Any]], str]:
     if len(features) <= max_faults:
         return features, "none"
-    ranked = sorted(
-        features,
-        key=lambda feature: _safe_float(
-            feature.get("properties", {}).get("fault_score", feature.get("properties", {}).get("confidence", 0.0))
-        ),
-        reverse=True,
-    )
-    return ranked[:max_faults], "fault_score_or_confidence_top"
+
+    def rank(feature: dict[str, Any]) -> float:
+        props = feature.get("properties", {}) if isinstance(feature.get("properties", {}), dict) else {}
+        return _safe_float(props.get("fault_score", props.get("confidence", 0.0)))
+
+    known = sorted([f for f in features if _fault_display_role(f.get("properties", {})) == "known"], key=rank, reverse=True)
+    reference = sorted([f for f in features if _fault_display_role(f.get("properties", {})) == "reference"], key=rank, reverse=True)
+    inferred = sorted([f for f in features if _fault_display_role(f.get("properties", {})) == "inferred"], key=rank, reverse=True)
+    max_faults = max(1, int(max_faults))
+    reference_quota = min(len(reference), max(1, max_faults // 5)) if reference else 0
+    if len(known) >= max_faults:
+        return known[:max_faults], "official_known_faults_priority_top"
+    remaining = max_faults - len(known)
+    reference_kept = reference[: min(reference_quota, remaining)]
+    remaining -= len(reference_kept)
+    return [*known, *reference_kept, *inferred[:remaining]], "official_known_then_reference_context_then_inferred_top"
 
 
 def _ramp_color(value: float, low: float, high: float) -> list[float]:
@@ -154,9 +204,11 @@ def _events_payload(events: list[dict[str, Any]], cfg: AppConfig, display_mode: 
     }
 
 
-def _fault_color(props: dict[str, Any], cfg: AppConfig, is_inferred: bool) -> list[float]:
-    if not is_inferred:
+def _fault_color(props: dict[str, Any], cfg: AppConfig, role: str) -> list[float]:
+    if role == "known":
         return [0.52, 0.66, 0.78]
+    if role == "reference":
+        return [0.62, 0.78, 0.86]
     value = _safe_float(props.get(cfg.visualization_3d.color_faults_by, props.get("confidence", 0.5)), 0.5)
     return _ramp_color(value, 0.0, 1.0)
 
@@ -165,16 +217,22 @@ def _faults_payload(features: list[dict[str, Any]], cfg: AppConfig) -> dict[str,
     known_tri: list[float] = []
     known_colors: list[float] = []
     known_lines: list[float] = []
+    reference_tri: list[float] = []
+    reference_colors: list[float] = []
+    reference_lines: list[float] = []
     inferred_tri: list[float] = []
     inferred_colors: list[float] = []
     inferred_lines: list[float] = []
     shown = 0
+    shown_known = 0
+    shown_reference = 0
+    shown_inferred = 0
     for feature in features:
-        props = feature.get("properties", {})
-        is_inferred = str(props.get("is_inferred", "")).lower() == "true" or props.get("is_inferred") is True
-        if is_inferred and not cfg.visualization_3d.show_inferred_faults:
+        props = feature.get("properties", {}) if isinstance(feature.get("properties", {}), dict) else {}
+        role = _fault_display_role(props)
+        if role == "inferred" and not cfg.visualization_3d.show_inferred_faults:
             continue
-        if not is_inferred and not cfg.visualization_3d.show_known_faults:
+        if role in {"known", "reference"} and not cfg.visualization_3d.show_known_faults:
             continue
         center_depth = _safe_float(
             props.get("center_depth_km"),
@@ -195,10 +253,22 @@ def _faults_payload(features: list[dict[str, Any]], cfg: AppConfig) -> dict[str,
             display_verts[0], display_verts[1], display_verts[1], display_verts[2],
             display_verts[2], display_verts[3], display_verts[3], display_verts[0],
         ]
-        color = _fault_color(props, cfg, is_inferred)
-        target_tri = inferred_tri if is_inferred else known_tri
-        target_colors = inferred_colors if is_inferred else known_colors
-        target_lines = inferred_lines if is_inferred else known_lines
+        color = _fault_color(props, cfg, role)
+        if role == "inferred":
+            target_tri = inferred_tri
+            target_colors = inferred_colors
+            target_lines = inferred_lines
+            shown_inferred += 1
+        elif role == "reference":
+            target_tri = reference_tri
+            target_colors = reference_colors
+            target_lines = reference_lines
+            shown_reference += 1
+        else:
+            target_tri = known_tri
+            target_colors = known_colors
+            target_lines = known_lines
+            shown_known += 1
         for vertex in triangles:
             target_tri.extend(vertex)
             target_colors.extend(color)
@@ -209,10 +279,16 @@ def _faults_payload(features: list[dict[str, Any]], cfg: AppConfig) -> dict[str,
         "known_positions": known_tri,
         "known_colors": known_colors,
         "known_line_positions": known_lines,
+        "reference_positions": reference_tri,
+        "reference_colors": reference_colors,
+        "reference_line_positions": reference_lines,
         "inferred_positions": inferred_tri,
         "inferred_colors": inferred_colors,
         "inferred_line_positions": inferred_lines,
         "displayed_fault_count": shown,
+        "displayed_known_fault_count": shown_known,
+        "displayed_reference_fault_count": shown_reference,
+        "displayed_inferred_fault_count": shown_inferred,
     }
 
 
@@ -290,8 +366,9 @@ def _html(payload: dict[str, Any]) -> str:
   </div>
   <div>
     <label><input id="eventsToggle" type="checkbox" checked>events</label>
-    <label><input id="knownToggle" type="checkbox" checked>known faults</label>
-    <label><input id="inferredToggle" type="checkbox" checked>inferred faults</label>
+    <label><input id="knownToggle" type="checkbox" checked>公式既知活断層</label>
+    <label><input id="referenceToggle" type="checkbox" checked>参考断層</label>
+    <label><input id="inferredToggle" type="checkbox" checked>推定断層候補</label>
     <label><input id="outlineToggle" type="checkbox" checked>Japan outline</label>
     <label><input id="bboxToggle" type="checkbox" checked>bbox</label>
   </div>
@@ -313,9 +390,9 @@ const labels = payload.events.frame_labels;
 const frameIndices = payload.events.frame_indices || labels.map((_, i) => i);
 let frame = 0, timer = null, frameIntervalMs = payload.metadata.playback_frame_interval_ms || 80;
 let mode = payload.events.mode === 'window' ? 1 : 0;
-let showEvents = true, showKnown = true, showInferred = true, showOutlines = true, showBbox = true;
+let showEvents = true, showKnown = true, showReference = true, showInferred = true, showOutlines = true, showBbox = true;
 let pointScale = 2.4, opacityScale = 1.2, colorMode = 0, trailDays = payload.metadata.event_trail_days || 14;
-document.getElementById('stats').textContent = `events=${{payload.events.count}} / faults=${{payload.faults.displayed_fault_count}} / frames=${{labels.length}} / step=${{payload.events.frame_days}} day(s) / renderer=${{payload.metadata.renderer}}`;
+document.getElementById('stats').textContent = `地震=${{payload.events.count}} / 公式既知=${{payload.faults.displayed_known_fault_count}} / 参考=${{payload.faults.displayed_reference_fault_count}} / 推定=${{payload.faults.displayed_inferred_fault_count}} / フレーム=${{labels.length}} / 間隔=${{payload.events.frame_days}}日 / renderer=${{payload.metadata.renderer}}`;
 const slider = document.getElementById('timeSlider'); slider.max = Math.max(0, labels.length - 1);
 const frameLabel = document.getElementById('frameLabel');
 const modeSelect = document.getElementById('modeSelect'); modeSelect.value = payload.events.mode === 'window' ? 'window' : 'cumulative';
@@ -396,8 +473,10 @@ const events = {{
   opacity: buf(new Float32Array(payload.events.opacities)), time: buf(new Float32Array(payload.events.times)), mag: buf(new Float32Array(payload.events.magnitudes)), depth: buf(new Float32Array(payload.events.depths_km))
 }};
 const knownMesh = makeMesh(payload.faults.known_positions, payload.faults.known_colors);
+const referenceMesh = makeMesh(payload.faults.reference_positions, payload.faults.reference_colors);
 const inferredMesh = makeMesh(payload.faults.inferred_positions, payload.faults.inferred_colors);
 const knownLines = makeLine(payload.faults.known_line_positions);
+const referenceLines = makeLine(payload.faults.reference_line_positions);
 const inferredLines = makeLine(payload.faults.inferred_line_positions);
 const bboxLine = makeLine(payload.context.bbox_positions);
 const outlineLines = payload.context.outlines.map(o => ({{name:o.name, ...makeLine(o.positions)}}));
@@ -423,6 +502,7 @@ function render() {{
   if (showBbox) drawLineStrip(bboxLine, [1.0,0.37,0.18,0.95]);
   gl.depthMask(false);
   if (showKnown) {{ drawMesh(knownMesh,0.14); drawLine(knownLines,[0.76,0.90,1.0,0.72]); }}
+  if (showReference) {{ drawMesh(referenceMesh,0.10); drawLine(referenceLines,[0.62,0.78,0.86,0.62]); }}
   if (showInferred) {{ drawMesh(inferredMesh,0.18); drawLine(inferredLines,[1.0,0.72,0.18,0.78]); }}
   if (showEvents && events.n > 0) {{
     gl.disable(gl.DEPTH_TEST);
@@ -461,6 +541,7 @@ modeSelect.addEventListener('change', e => {{ mode = e.target.value === 'window'
 document.getElementById('speedSlider').addEventListener('input', e => {{ frameIntervalMs = Number(e.target.value); document.getElementById('speedLabel').textContent = String(frameIntervalMs); if(timer) play(); }});
 document.getElementById('eventsToggle').addEventListener('change', e => {{ showEvents=e.target.checked; render(); }});
 document.getElementById('knownToggle').addEventListener('change', e => {{ showKnown=e.target.checked; render(); }});
+document.getElementById('referenceToggle').addEventListener('change', e => {{ showReference=e.target.checked; render(); }});
 document.getElementById('inferredToggle').addEventListener('change', e => {{ showInferred=e.target.checked; render(); }});
 document.getElementById('outlineToggle').addEventListener('change', e => {{ showOutlines=e.target.checked; render(); }});
 document.getElementById('bboxToggle').addEventListener('change', e => {{ showBbox=e.target.checked; render(); }});
@@ -485,9 +566,13 @@ def write_webgl_events_faults(
 ) -> None:
     events = read_table(paths.data_interim / "event_qc.parquet")
     selected_events, event_decimation = _select_events(events, max_events or cfg.visualization_3d.max_events)
-    known = read_features(paths.data_processed / "fault_segment.gpkg") if (paths.data_processed / "fault_segment.gpkg").exists() else []
-    inferred = read_features(paths.data_processed / "inferred_faults.gpkg") if (paths.data_processed / "inferred_faults.gpkg").exists() else []
-    faults, fault_decimation = _limit_faults(known + inferred, cfg.visualization_3d.max_fault_segments)
+    known_path = paths.data_processed / "fault_segment.gpkg"
+    reference_path = paths.data_processed / "reference_fault_segment.gpkg"
+    inferred_path = paths.data_processed / "inferred_faults.gpkg"
+    known = _tag_fault_features(read_features(known_path), "known") if known_path.exists() else []
+    reference = _tag_fault_features(read_features(reference_path), "reference") if reference_path.exists() else []
+    inferred = _tag_fault_features(read_features(inferred_path), "inferred") if inferred_path.exists() else []
+    faults, fault_decimation = _limit_faults([*known, *reference, *inferred], cfg.visualization_3d.max_fault_segments)
     display_mode = mode or cfg.visualization_3d.mode
     # Events/faults use one-day indexed frames by default. Unlike Plotly frames,
     # the WebGL renderer stores each event once and filters by time in the shader.
@@ -500,6 +585,8 @@ def write_webgl_events_faults(
             events_payload["positions"],
             faults_payload["known_positions"],
             faults_payload["known_line_positions"],
+            faults_payload["reference_positions"],
+            faults_payload["reference_line_positions"],
             faults_payload["inferred_positions"],
             faults_payload["inferred_line_positions"],
             context_payload["bbox_positions"],
@@ -522,8 +609,15 @@ def write_webgl_events_faults(
         "old_frame_residue_prevention": "events are filtered by a uniform frame index in one draw call; previous frame geometry is not appended",
         "original_event_count": len(events),
         "displayed_event_count": len(selected_events),
-        "original_fault_count": len(known) + len(inferred),
+        "original_fault_count": len(known) + len(reference) + len(inferred),
+        "original_known_fault_count": len(known),
+        "original_reference_fault_count": len(reference),
+        "original_inferred_fault_count": len(inferred),
         "displayed_fault_count": faults_payload["displayed_fault_count"],
+        "displayed_known_fault_count": faults_payload["displayed_known_fault_count"],
+        "displayed_reference_fault_count": faults_payload["displayed_reference_fault_count"],
+        "displayed_inferred_fault_count": faults_payload["displayed_inferred_fault_count"],
+        "active_fault_display_policy": "reference-only traces are visual context only and are not counted as official known active faults",
         "original_frame_count": len(events_payload["frame_indices"]),
         "displayed_frame_count": len(events_payload["frame_labels"]),
         "decimation_method": ", ".join(sorted({event_decimation, "none_webgl_daily_frames", fault_decimation})),
