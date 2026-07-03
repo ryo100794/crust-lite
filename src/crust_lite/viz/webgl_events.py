@@ -208,7 +208,7 @@ def _fault_color(props: dict[str, Any], cfg: AppConfig, role: str) -> list[float
     if role == "known":
         return [0.52, 0.66, 0.78]
     if role == "reference":
-        return [0.62, 0.78, 0.86]
+        return [0.68, 1.00, 0.92]
     value = _safe_float(props.get(cfg.visualization_3d.color_faults_by, props.get("confidence", 0.5)), 0.5)
     return _ramp_color(value, 0.0, 1.0)
 
@@ -366,8 +366,8 @@ def _html(payload: dict[str, Any]) -> str:
   </div>
   <div>
     <label><input id="eventsToggle" type="checkbox" checked>events</label>
-    <label><input id="knownToggle" type="checkbox" checked>公式既知活断層</label>
-    <label><input id="referenceToggle" type="checkbox" checked>参考断層</label>
+    <label><input id="knownToggle" type="checkbox" checked>既知活断層コンテキスト</label>
+    <label><input id="referenceToggle" type="checkbox" checked>参考断層（非公式）</label>
     <label><input id="inferredToggle" type="checkbox" checked>推定断層候補</label>
     <label><input id="outlineToggle" type="checkbox" checked>Japan outline</label>
     <label><input id="bboxToggle" type="checkbox" checked>bbox</label>
@@ -393,6 +393,11 @@ let mode = payload.events.mode === 'window' ? 1 : 0;
 let showEvents = true, showKnown = true, showReference = true, showInferred = true, showOutlines = true, showBbox = true;
 let pointScale = 2.4, opacityScale = 1.2, colorMode = 0, trailDays = payload.metadata.event_trail_days || 14;
 document.getElementById('stats').textContent = `地震=${{payload.events.count}} / 公式既知=${{payload.faults.displayed_known_fault_count}} / 参考=${{payload.faults.displayed_reference_fault_count}} / 推定=${{payload.faults.displayed_inferred_fault_count}} / フレーム=${{labels.length}} / 間隔=${{payload.events.frame_days}}日 / renderer=${{payload.metadata.renderer}}`;
+const faultStatus = document.createElement('div');
+faultStatus.textContent = payload.faults.displayed_known_fault_count > 0
+  ? `既知活断層コンテキスト: 公式既知=${{payload.faults.displayed_known_fault_count}} / 参考=${{payload.faults.displayed_reference_fault_count}}`
+  : `公式既知活断層は未読込です。参考断層${{payload.faults.displayed_reference_fault_count}}件を既知活断層コンテキストとして表示中です。`;
+document.getElementById('stats').after(faultStatus);
 const slider = document.getElementById('timeSlider'); slider.max = Math.max(0, labels.length - 1);
 const frameLabel = document.getElementById('frameLabel');
 const modeSelect = document.getElementById('modeSelect'); modeSelect.value = payload.events.mode === 'window' ? 'window' : 'cumulative';
@@ -502,7 +507,7 @@ function render() {{
   if (showBbox) drawLineStrip(bboxLine, [1.0,0.37,0.18,0.95]);
   gl.depthMask(false);
   if (showKnown) {{ drawMesh(knownMesh,0.14); drawLine(knownLines,[0.76,0.90,1.0,0.72]); }}
-  if (showReference) {{ drawMesh(referenceMesh,0.10); drawLine(referenceLines,[0.62,0.78,0.86,0.62]); }}
+  if (showReference) {{ drawMesh(referenceMesh,0.10); drawLine(referenceLines,[0.68,1.0,0.92,0.95]); }}
   if (showInferred) {{ drawMesh(inferredMesh,0.18); drawLine(inferredLines,[1.0,0.72,0.18,0.78]); }}
   if (showEvents && events.n > 0) {{
     gl.disable(gl.DEPTH_TEST);

@@ -505,7 +505,7 @@ def _fault_type_color(role: str) -> list[float]:
     if role == "inferred":
         return [1.0, 0.61, 0.16]
     if role == "reference":
-        return [0.62, 0.78, 0.86]
+        return [0.68, 1.00, 0.92]
     return [0.24, 0.72, 1.0]
 
 
@@ -1087,8 +1087,8 @@ def _webgl_html(payload: dict[str, Any]) -> str:
     <label><input id="outlineToggle" type="checkbox" checked>日本列島輪郭</label>
     <label><input id="plateBoundaryToggle" type="checkbox">プレート境界</label>
     <label><input id="plateInterfaceToggle" type="checkbox">スラブ/境界線</label>
-    <label><input id="knownFaultToggle" type="checkbox" checked>公式既知活断層</label>
-    <label><input id="referenceFaultToggle" type="checkbox" checked>参考断層</label>
+    <label><input id="knownFaultToggle" type="checkbox" checked>既知活断層コンテキスト</label>
+    <label><input id="referenceFaultToggle" type="checkbox" checked>参考断層（非公式）</label>
     <label><input id="inferredFaultToggle" type="checkbox" checked>推定断層候補</label>
     <label><input id="comparisonLineToggle" type="checkbox" checked>近接比較線</label>
     <label><input id="faultSurfaceToggle" type="checkbox">断層面</label>
@@ -1096,9 +1096,9 @@ def _webgl_html(payload: dict[str, Any]) -> str:
   </div>
   <div>
     <label>断層色 <select id="faultColorMode"><option value="1" selected>既知/推定</option><option value="0">波動相互作用スコア</option></select></label>
-    <span><span class="swatch" style="background:#3db8ff"></span>公式既知 <span class="swatch" style="background:#9ec7db"></span>参考 <span class="swatch" style="background:#ff9c29"></span>推定 <span class="swatch" style="background:#fff238"></span>近接比較線</span>
+    <span><span class="swatch" style="background:#3db8ff"></span>公式既知 <span class="swatch" style="background:#adffeb"></span>参考 <span class="swatch" style="background:#ff9c29"></span>推定 <span class="swatch" style="background:#fff238"></span>近接比較線</span>
   </div>
-  <div>断層比較: 公式既知活断層=青、参考断層（非公式/粗い）=灰青、推定断層候補=橙、近接比較線=黄。色は波動相互作用スコアにも切替可能です。</div>
+  <div>断層比較: 公式既知活断層=青、参考断層（非公式/粗い）=明るい青緑、推定断層候補=橙、近接比較線=黄。色は波動相互作用スコアにも切替可能です。</div>
   <div id="plateOverlayNote"></div>
   <div>z軸注意: 波形そのものは深度を直接観測しません。表示深度は不確実性を含む計算上の中心です。</div>
   <div>
@@ -1117,6 +1117,11 @@ const depthUncertainty = payload.metadata.depth_diagnostics.uncertainty || {{row
 document.getElementById('stats').textContent =
   `スプラット=${{payload.metadata.displayed_splats}} / 公式既知=${{payload.faults.displayed_known_fault_count}} / 参考=${{payload.faults.displayed_reference_fault_count}} / 推定=${{payload.faults.displayed_inferred_fault_count}} / 比較線=${{payload.faults.comparison_link_count}} / 深度p05-p95行=${{depthUncertainty.rows_with_complete_p05_p50_p95}} / 日本輪郭点=${{payload.terrain.outline_vertices}}`;
 document.getElementById('plateOverlayNote').textContent = payload.metadata.tectonic_overlay_note;
+const faultStatus = document.createElement('div');
+faultStatus.textContent = payload.faults.known_fault_count > 0
+  ? `既知活断層コンテキスト: 公式既知=${{payload.faults.known_fault_count}} / 参考=${{payload.faults.reference_fault_count}}`
+  : `公式既知活断層は未読込です。参考断層${{payload.faults.reference_fault_count}}件を既知活断層コンテキストとして表示中です。`;
+document.getElementById('stats').after(faultStatus);
 
 function shader(type, src) {{
   const s = gl.createShader(type);
@@ -1346,11 +1351,11 @@ function render() {{
   }}
   if (showFaultSurfaces) {{
     if (showKnownFaults) drawColoredTriangles(faultObject(knownFaultSurfacesScore, knownFaultSurfacesType), 0.18);
-    if (showReferenceFaults) drawColoredTriangles(faultObject(referenceFaultSurfacesScore, referenceFaultSurfacesType), 0.12);
+    if (showReferenceFaults) drawColoredTriangles(faultObject(referenceFaultSurfacesScore, referenceFaultSurfacesType), 0.20);
     if (showInferredFaults) drawColoredTriangles(faultObject(inferredFaultSurfacesScore, inferredFaultSurfacesType), 0.18);
   }}
   if (showKnownFaults) drawColoredLines(faultObject(knownFaultLinesScore, knownFaultLinesType), 0.96);
-  if (showReferenceFaults) drawColoredLines(faultObject(referenceFaultLinesScore, referenceFaultLinesType), 0.78);
+  if (showReferenceFaults) drawColoredLines(faultObject(referenceFaultLinesScore, referenceFaultLinesType), 0.98);
   if (showInferredFaults) drawColoredLines(faultObject(inferredFaultLinesScore, inferredFaultLinesType), 0.88);
   if (showComparisonLinks) drawColoredLines(comparisonLines, 0.82);
   if (showLines) {{
