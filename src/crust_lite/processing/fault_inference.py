@@ -325,23 +325,96 @@ def _known_fault_distance_score(
     center: tuple[float, float],
     known_features: list[dict[str, Any]],
     projector: LocalProjector,
-) -> tuple[float, float, str]:
+    candidate_strike: float | None = None,
+) -> tuple[float, float, str, float | None, str]:
     if not known_features:
-        return 0.5, float("inf"), "no_known_faults_loaded"
-    distances = []
+        return 0.5, float("inf"), "no_known_faults_loaded", None, "no_known_fault_feedback"
+    best_distance = float("inf")
     nearest = ""
+    best_strike_diff: float | None = None
     for feature in known_features:
-        geom = feature.get("geometry", {})
-        if geom.get("type") != "LineString":
-            continue
-        line = projector.line_lonlat_to_xy(geom.get("coordinates", []))
-        distance = distance_to_polyline_km(center, line)
-        distances.append(distance)
-        if distance == min(distances):
-            nearest = str(feature.get("properties", {}).get("segment_id", "known_fault"))
-    min_distance = min(distances) if distances else float("inf")
-    score = clamp01(1.0 - min(min_distance, 30.0) / 30.0)
-    return score, min_distance, nearest
+        props = feature.get("properties", {}) if isinstance(feature.get("properties"), dict) else {}
+        for line in _feature_lines_xy(feature, projector):
+            if len(line) < 2:
+                continue
+            distance = distance_to_polyline_km(center, line)
+            if distance >= best_distance:
+                continue
+            nearest = str(props.get("segment_id", "known_fault"))
+            best_distance = distance
+            known_strike = _line_strike_deg(line)
+            best_strike_diff = (
+                _axial_strike_difference(candidate_strike, known_strike)
+                if candidate_strike is not None and known_strike is not None
+                else None
+            )
+    score = _known_fault_feedback_score(best_distance, best_strike_diff)
+    feedback_status = _known_fault_feedback_status(best_distance, best_strike_diff)
+    return score, best_distance, nearest, best_strike_diff, feedback_status
+
+
+def _feature_lines_xy(feature: dict[str, Any], projector: LocalProjector) -> list[list[tuple[float, float]]]:
+    geom = feature.get("geometry", {}) if isinstance(feature.get("geometry"), dict) else {}
+    local_lines = geom.get("local_trace_lines_m")
+    if local_lines:
+        return [[(float(x), float(y)) for x, y in line] for line in local_lines if len(line) >= 2]
+    local = geom.get("local_trace_m")
+    if local:
+        return [[(float(x), float(y)) for x, y in line_or_points] for line_or_points in _normalize_local_lines(local)]
+    geom_type = geom.get("type")
+    if geom_type == "LineString":
+        return [projector.line_lonlat_to_xy(geom.get("coordinates", []))]
+    if geom_type == "MultiLineString":
+        return [projector.line_lonlat_to_xy(line) for line in geom.get("coordinates", [])]
+    return []
+
+
+def _normalize_local_lines(local: Any) -> list[list[list[float]]]:
+    if not isinstance(local, list) or not local:
+        return []
+    first = local[0]
+    if isinstance(first, list) and len(first) >= 2 and isinstance(first[0], (int, float)):
+        return [local]
+    return [line for line in local if isinstance(line, list)]
+
+
+def _line_strike_deg(line: list[tuple[float, float]]) -> float | None:
+    if len(line) < 2:
+        return None
+    x0, y0 = line[0]
+    x1, y1 = line[-1]
+    return (math.degrees(math.atan2(x1 - x0, y1 - y0)) + 360.0) % 360.0
+
+
+def _axial_strike_difference(a: float | None, b: float | None) -> float | None:
+    if a is None or b is None:
+        return None
+    diff = abs((float(a) - float(b) + 180.0) % 360.0 - 180.0)
+    return min(diff, abs(diff - 180.0))
+
+
+def _known_fault_feedback_score(distance_km: float, strike_diff_deg: float | None) -> float:
+    if not math.isfinite(distance_km):
+        return 0.5
+    distance_score = clamp01(1.0 - min(distance_km, 30.0) / 30.0)
+    if strike_diff_deg is None:
+        return distance_score
+    strike_score = clamp01(1.0 - min(strike_diff_deg, 90.0) / 90.0)
+    return clamp01(0.70 * distance_score + 0.30 * strike_score)
+
+
+def _known_fault_feedback_status(distance_km: float, strike_diff_deg: float | None) -> str:
+    if not math.isfinite(distance_km):
+        return "no_known_fault_geometry"
+    if distance_km <= 5.0 and strike_diff_deg is not None and strike_diff_deg <= 25.0:
+        return "known_trace_aligned"
+    if distance_km <= 5.0:
+        return "near_known_trace_but_oblique"
+    if distance_km <= 20.0 and strike_diff_deg is not None and strike_diff_deg <= 25.0:
+        return "parallel_offset_from_known_trace"
+    if distance_km <= 30.0:
+        return "regional_proximity_without_trace_match"
+    return "no_near_known_fault_within_threshold"
 
 
 def _lineament_support_score(row: dict[str, Any]) -> float:
@@ -355,7 +428,7 @@ def _lineament_fault_score(row: dict[str, Any], known_score: float) -> float:
     surface = clamp01(float(row.get("surface_wave_anomaly_score", 0.0)))
     scattering = clamp01(float(row.get("scattering_lineament_score", 0.0)))
     support = _lineament_support_score(row)
-    return clamp01(0.30 * linearity + 0.30 * surface + 0.25 * scattering + 0.10 * support + 0.05 * known_score)
+    return clamp01(0.26 * linearity + 0.28 * surface + 0.22 * scattering + 0.10 * support + 0.14 * known_score)
 
 
 def _lineament_width_km(row: dict[str, Any]) -> float:
@@ -381,7 +454,15 @@ def _lineament_fault_features(
     )[:max_features]
     for idx, row in enumerate(ranked):
         center = (float(row.get("center_x_m", 0.0)), float(row.get("center_y_m", 0.0)))
-        known_score, known_distance_km, nearest_known = _known_fault_distance_score(center, known_features, projector)
+        candidate_strike = float(row.get("strike", 0.0))
+        known_score, known_distance_km, nearest_known, known_strike_diff, feedback_status = (
+            _known_fault_distance_score(
+                center,
+                known_features,
+                projector,
+                candidate_strike=candidate_strike,
+            )
+        )
         score = _lineament_fault_score(row, known_score)
         confidence = clamp01(max(float(row.get("confidence", 0.0)), confidence_from_score(score, int(row.get("n_support", 0) or 0))))
         width_km = _lineament_width_km(row)
@@ -393,7 +474,7 @@ def _lineament_fault_features(
             "source": "synthetic_aperture_shallow_lineament",
             "source_table": row.get("source_table", "shallow_lineament"),
             "lineament_id": row.get("lineament_id", ""),
-            "strike": float(row.get("strike", 0.0)),
+            "strike": candidate_strike,
             "dip": 75.0,
             "rake": 0.0,
             "length_km": max(0.5, float(row.get("length_km", 0.5))),
@@ -424,9 +505,17 @@ def _lineament_fault_features(
             "waveform_residual_score": clamp01(max(float(row.get("surface_wave_anomaly_score", 0.0)), float(row.get("scattering_lineament_score", 0.0)))),
             "distance_from_known_fault_score": known_score,
             "distance_to_known_fault_km": known_distance_km,
+            "nearest_known_segment_id": nearest_known,
+            "strike_difference_to_known_deg": known_strike_diff,
+            "known_fault_feedback_status": feedback_status,
+            "known_fault_feedback_weight": known_score,
             "fault_score": score,
             "confidence": confidence,
-            "notes": f"synthetic_aperture_lineament; nearest_known={nearest_known}; frequency-resolved source retained in shallow_lineament_spectral.parquet",
+            "notes": (
+                f"synthetic_aperture_lineament; nearest_known={nearest_known}; "
+                f"known_feedback={feedback_status}; "
+                "frequency-resolved source retained in shallow_lineament_spectral.parquet"
+            ),
             "is_sample_data": bool(row.get("is_sample_data", False)),
         }
         features.append(
@@ -546,8 +635,13 @@ def infer_faults(config: AppConfig, paths: ProjectPaths) -> dict[str, Any]:
         event_ids = {str(events[idx]["event_id"]) for idx in indices}
         mech_score = _mechanism_score(strike, mechanisms, event_ids)
         gnss_score = _gnss_score((float(center[0]), float(center[1])), gnss_rows)
-        known_score, known_distance_km, nearest_known = _known_fault_distance_score(
-            (float(center[0]), float(center[1])), known_features, projector
+        known_score, known_distance_km, nearest_known, known_strike_diff, feedback_status = (
+            _known_fault_distance_score(
+                (float(center[0]), float(center[1])),
+                known_features,
+                projector,
+                candidate_strike=strike,
+            )
         )
         wave_score = 0.5
         score = fault_score(planarity, mech_score, gnss_score, wave_score, known_score)
@@ -580,12 +674,16 @@ def infer_faults(config: AppConfig, paths: ProjectPaths) -> dict[str, Any]:
             "waveform_residual_score": wave_score,
             "distance_from_known_fault_score": known_score,
             "distance_to_known_fault_km": known_distance_km,
+            "nearest_known_segment_id": nearest_known,
+            "strike_difference_to_known_deg": known_strike_diff,
+            "known_fault_feedback_status": feedback_status,
+            "known_fault_feedback_weight": known_score,
             "fault_score": score,
             "confidence": confidence,
             "notes": (
-                "known_fault_extension_candidate"
-                if known_distance_km <= 5.0
-                else f"unregistered_candidate; nearest_known={nearest_known}"
+                f"known_fault_extension_candidate; nearest_known={nearest_known}; feedback={feedback_status}"
+                if feedback_status == "known_trace_aligned"
+                else f"unregistered_or_offset_candidate; nearest_known={nearest_known}; feedback={feedback_status}"
             ),
             "is_sample_data": any(
                 str(events[idx].get("is_sample_data", "")).lower() == "true" for idx in indices

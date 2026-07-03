@@ -3,8 +3,12 @@ from __future__ import annotations
 import csv
 import json
 import math
+import re
+import zipfile
+from html import unescape
 from pathlib import Path
 from typing import Any
+from xml.etree import ElementTree as ET
 
 from crust_lite.config import AppConfig
 from crust_lite.geo import LocalProjector, distance_to_polyline_km, polyline_length_km
@@ -44,6 +48,100 @@ def _read_geopandas_features(path: Path) -> list[Feature]:
     return features
 
 
+def _clean_kml_text(value: str | None, limit: int = 2000) -> str:
+    if not value:
+        return ""
+    text = re.sub(r"<[^>]+>", " ", unescape(value))
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:limit]
+
+
+def _segment_id_from_kml_name(name: str, fallback: str) -> tuple[str, str]:
+    clean = _clean_kml_text(name, limit=300)
+    if not clean:
+        return fallback, ""
+    parts = clean.split(maxsplit=1)
+    if parts and re.match(r"^\d{3}-\d{2}", parts[0]):
+        return parts[0], parts[1] if len(parts) > 1 else clean
+    return clean, clean
+
+
+def _kml_coordinates_to_line(value: str | None) -> list[list[float]]:
+    coords: list[list[float]] = []
+    if not value:
+        return coords
+    for token in value.replace("\n", " ").split():
+        parts = token.split(",")
+        if len(parts) < 2:
+            continue
+        try:
+            lon = float(parts[0])
+            lat = float(parts[1])
+        except ValueError:
+            continue
+        if math.isfinite(lon) and math.isfinite(lat):
+            coords.append([lon, lat])
+    return coords
+
+
+def _read_kml_text(path: Path) -> str:
+    if path.suffix.lower() == ".kmz":
+        with zipfile.ZipFile(path) as archive:
+            kml_names = [name for name in archive.namelist() if name.lower().endswith(".kml")]
+            if not kml_names:
+                raise ValueError(f"KMZ active-fault input contains no KML file: {path}")
+            return archive.read(kml_names[0]).decode("utf-8", "replace")
+    return path.read_text(encoding="utf-8")
+
+
+def _read_kml_features(path: Path) -> list[Feature]:
+    text = _read_kml_text(path)
+    root = ET.fromstring(text)
+    ns = {"k": "http://www.opengis.net/kml/2.2"}
+    features: list[Feature] = []
+    for idx, placemark in enumerate(root.findall(".//k:Placemark", ns)):
+        name = placemark.findtext("k:name", default="", namespaces=ns)
+        description = placemark.findtext("k:description", default="", namespaces=ns)
+        lines = [
+            line
+            for line in (
+                _kml_coordinates_to_line(node.text)
+                for node in placemark.findall(".//k:LineString/k:coordinates", ns)
+            )
+            if len(line) >= 2
+        ]
+        if not lines:
+            continue
+        segment_id, fault_name = _segment_id_from_kml_name(name, f"{path.stem}_{idx:06d}")
+        detail_url = ""
+        match = re.search(r"https://gbank\.gsj\.jp/activefault/[^\"'<> ]+", description or "")
+        if match:
+            detail_url = match.group(0)
+        geometry: dict[str, Any]
+        if len(lines) == 1:
+            geometry = {"type": "LineString", "coordinates": lines[0]}
+        else:
+            geometry = {"type": "MultiLineString", "coordinates": lines}
+        features.append(
+            {
+                "type": "Feature",
+                "geometry": geometry,
+                "properties": {
+                    "segment_id": segment_id,
+                    "fault_name": fault_name,
+                    "name": _clean_kml_text(name, limit=300),
+                    "description": _clean_kml_text(description),
+                    "detail_url": detail_url,
+                    "source": "aist_gsj_active_fault_database",
+                    "source_agency_reference": "AIST/GSJ Active Fault Database KMZ active-fault trace",
+                    "source_feature_index": idx,
+                    "geometry_accuracy": "source_trace_from_aist_gsj_kmz_approximate",
+                },
+            }
+        )
+    return features
+
+
 def _read_csv_features(path: Path) -> list[Feature]:
     with path.open("r", encoding="utf-8", newline="") as fh:
         rows = [dict(row) for row in csv.DictReader(fh)]
@@ -78,6 +176,8 @@ def read_fault_features(path: Path) -> list[Feature]:
     suffix = path.suffix.lower()
     if suffix in {".geojson", ".json"}:
         return read_fault_geojson(path)
+    if suffix in {".kml", ".kmz"}:
+        return _read_kml_features(path)
     if suffix == ".csv":
         return _read_csv_features(path)
     if suffix in {".gpkg", ".shp", ".zip"}:
@@ -108,6 +208,9 @@ def _geometry_lines_lonlat(geom: dict[str, Any]) -> list[list[list[float]]]:
 
 def _feature_local_lines(feature: Feature, projector: LocalProjector) -> list[LineXY]:
     geom = feature.get("geometry") or {}
+    local_lines = geom.get("local_trace_lines_m")
+    if local_lines:
+        return [[(float(x), float(y)) for x, y in line] for line in local_lines if len(line) >= 2]
     local = geom.get("local_trace_m")
     if local:
         return [[(float(x), float(y)) for x, y in local]]
@@ -140,6 +243,8 @@ def _source_quality(props: dict[str, Any], source_path: Path, is_sample: bool) -
     path_text = str(source_path).lower()
     if is_sample or "synthetic_sample" in text:
         return "synthetic_sample"
+    if "aist_gsj_active_fault_database" in text or "aist/gsj active fault database" in text:
+        return "official_aist_gsj_active_fault_database"
     if "coarse_seed" in text or "coarse_seed" in path_text or "not_official_trace" in text:
         return "coarse_reference_not_official"
     return "user_supplied_data_source"
@@ -178,6 +283,12 @@ def _augment_feature(feature: Feature, config: AppConfig, source_path: Path, ind
         props["trace_x_m"] = [x for x, _ in xy]
         props["trace_y_m"] = [y for _, y in xy]
         geom["local_trace_m"] = [[x, y] for x, y in xy]
+        if len(lines) > 1:
+            geom["local_trace_lines_m"] = [
+                [[float(x), float(y)] for x, y in line]
+                for line in lines
+                if len(line) >= 2
+            ]
 
     if props.get("strike") in (None, ""):
         strike = _trace_strike_deg(xy)
@@ -311,6 +422,7 @@ def build_known_fault_reference_layers(config: AppConfig, paths: ProjectPaths) -
         "input_known_fault_feature_count": len(features),
         "derived_from_source_geometry_only": True,
         "does_not_create_known_faults": True,
+        "comparison_feedback_method": "nearest_known_trace_distance_and_strike_difference_with_reason_codes",
         "trace_sample_spacing_km": config.known_fault_detail.trace_sample_spacing_km,
         "subsegment_length_km": config.known_fault_detail.subsegment_length_km,
         "not_prediction": True,
@@ -349,6 +461,24 @@ def _feature_center_xy(feature: Feature, projector: LocalProjector) -> tuple[flo
     return (sum(x for x, _ in points) / len(points), sum(y for _, y in points) / len(points))
 
 
+def _comparison_reason(distance_km: float, strike_diff_deg: float | None, max_distance_km: float) -> tuple[str, str]:
+    if not math.isfinite(distance_km):
+        return "no_known_fault_geometry", "keep_unmatched_candidate_for_review"
+    if distance_km <= 5.0 and strike_diff_deg is not None and strike_diff_deg <= 25.0:
+        return "known_trace_aligned", "boost_and_use_known_trace_as_alignment_reference"
+    if distance_km <= 5.0:
+        return "near_known_trace_but_oblique", "retain_candidate_and_review_mechanism_or_projection_bias"
+    if distance_km <= 20.0 and strike_diff_deg is not None and strike_diff_deg <= 25.0:
+        return "parallel_offset_from_known_trace", "boost_with_penalty_and_review_location_bias_or_secondary_structure"
+    if distance_km <= max_distance_km:
+        return "regional_proximity_without_trace_match", "weak_feedback_only"
+    return "no_near_known_fault_within_threshold", "no_known_fault_feedback"
+
+
+def _line_strike_deg(line: LineXY) -> float | None:
+    return _trace_strike_deg(line) if len(line) >= 2 else None
+
+
 def _known_inferred_comparison_rows(
     config: AppConfig,
     paths: ProjectPaths,
@@ -362,32 +492,55 @@ def _known_inferred_comparison_rows(
     known_lines = []
     for feature in known_features:
         props = feature.get("properties", {}) if isinstance(feature.get("properties"), dict) else {}
-        lines = _feature_local_lines(feature, projector)
-        if lines:
-            known_lines.append((str(props.get("segment_id", "unknown")), props, lines))
+        for line_index, line in enumerate(_feature_local_lines(feature, projector)):
+            if len(line) >= 2:
+                known_lines.append(
+                    (
+                        str(props.get("segment_id", "unknown")),
+                        props,
+                        line_index,
+                        line,
+                        _line_strike_deg(line),
+                    )
+                )
     rows: list[dict[str, Any]] = []
     max_distance = float(config.known_fault_detail.comparison_max_distance_km)
     for feature in inferred:
         props = feature.get("properties", {}) if isinstance(feature.get("properties"), dict) else {}
         center = _feature_center_xy(feature, projector)
-        best = (float("inf"), "", {})
-        for segment_id, known_props, lines in known_lines:
-            distance = min(distance_to_polyline_km(center, line) for line in lines if len(line) >= 2)
+        inferred_strike = _coerce_float(props.get("strike"))
+        best: tuple[float, str, dict[str, Any], int | None, float | None] = (float("inf"), "", {}, None, None)
+        for segment_id, known_props, line_index, line, known_strike in known_lines:
+            distance = distance_to_polyline_km(center, line)
             if distance < best[0]:
-                best = (distance, segment_id, known_props)
-        if math.isfinite(best[0]) and best[0] <= max_distance:
-            rows.append(
-                {
-                    "inferred_segment_id": props.get("segment_id", ""),
-                    "known_segment_id": best[1],
-                    "nearest_distance_km": best[0],
-                    "known_source": best[2].get("source", "unknown"),
-                    "known_source_quality": best[2].get("source_quality", "unknown"),
-                    "inferred_fault_score": props.get("fault_score", None),
-                    "comparison_role": "nearest_inferred_candidate_to_source_known_fault_geometry",
-                    "not_prediction": True,
-                }
-            )
+                strike_diff = (
+                    min(abs((inferred_strike - known_strike + 180.0) % 360.0 - 180.0), 180.0)
+                    if inferred_strike is not None and known_strike is not None
+                    else None
+                )
+                if strike_diff is not None:
+                    strike_diff = min(strike_diff, abs(strike_diff - 180.0))
+                best = (distance, segment_id, known_props, line_index, strike_diff)
+        reason, feedback_action = _comparison_reason(best[0], best[4], max_distance)
+        feedback_weight = max(0.0, 1.0 - min(best[0], max_distance) / max_distance) if math.isfinite(best[0]) else 0.0
+        rows.append(
+            {
+                "inferred_segment_id": props.get("segment_id", ""),
+                "known_segment_id": best[1],
+                "known_line_index": best[3],
+                "nearest_distance_km": best[0],
+                "strike_difference_deg": best[4],
+                "known_source": best[2].get("source", "unknown"),
+                "known_source_quality": best[2].get("source_quality", "unknown"),
+                "known_fault_name": best[2].get("fault_name", best[2].get("name", "")),
+                "inferred_fault_score": props.get("fault_score", None),
+                "difference_reason": reason,
+                "feedback_action": feedback_action,
+                "feedback_weight": feedback_weight,
+                "comparison_role": "nearest_inferred_candidate_to_source_known_fault_geometry",
+                "not_prediction": True,
+            }
+        )
     return rows
 
 
