@@ -150,14 +150,15 @@ def _event_trace(go: Any, rows: list[dict[str, Any]], cfg: AppConfig, name: str,
     )
 
 
+def _fault_rank_value(feature: dict[str, Any]) -> float:
+    props = feature.get("properties", {}) if isinstance(feature.get("properties"), dict) else {}
+    return _safe_float(props.get("fault_score"), _safe_float(props.get("confidence"), 0.0)) or 0.0
+
+
 def _limit_faults(features: list[dict[str, Any]], max_faults: int) -> tuple[list[dict[str, Any]], str]:
     if len(features) <= max_faults:
         return features, "none"
-    ranked = sorted(
-        features,
-        key=lambda feature: float(feature.get("properties", {}).get("fault_score", feature.get("properties", {}).get("confidence", 0.0))),
-        reverse=True,
-    )
+    ranked = sorted(features, key=_fault_rank_value, reverse=True)
     return ranked[:max_faults], "fault_score_or_confidence_top"
 
 
@@ -185,10 +186,10 @@ def _fault_mesh_trace(
         center_x,
         center_y,
         center_depth,
-        float(props.get("strike", 0.0)),
-        float(props.get("dip", 70.0)),
-        float(props.get("length_km", 5.0)),
-        float(props.get("width_km", 5.0)),
+        _safe_float(props.get("strike"), 0.0) or 0.0,
+        _safe_float(props.get("dip"), 70.0) or 70.0,
+        max(0.1, _safe_float(props.get("length_km"), 5.0) or 5.0),
+        max(0.1, _safe_float(props.get("width_km"), 5.0) or 5.0),
     )
     z = [plot_z_m(v[2], cfg.visualization_3d.vertical_exaggeration) + z_offset_m for v in verts]
     hover = "<br>".join(
@@ -235,7 +236,7 @@ def _fault_mesh_trace(
 
 def _fault_center(feature: dict[str, Any]) -> tuple[float, float]:
     props = feature.get("properties", {})
-    return float(props.get("center_x_m", 0.0)), float(props.get("center_y_m", 0.0))
+    return _safe_float(props.get("center_x_m"), 0.0) or 0.0, _safe_float(props.get("center_y_m"), 0.0) or 0.0
 
 
 def _failure_indicator_trace(
