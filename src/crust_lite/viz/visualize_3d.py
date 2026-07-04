@@ -155,11 +155,24 @@ def _fault_rank_value(feature: dict[str, Any]) -> float:
     return _safe_float(props.get("fault_score"), _safe_float(props.get("confidence"), 0.0)) or 0.0
 
 
+def _is_inferred_fault(feature: dict[str, Any]) -> bool:
+    props = feature.get("properties", {}) if isinstance(feature.get("properties"), dict) else {}
+    value = props.get("is_inferred", False)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y"}
+    return bool(value)
+
+
 def _limit_faults(features: list[dict[str, Any]], max_faults: int) -> tuple[list[dict[str, Any]], str]:
     if len(features) <= max_faults:
         return features, "none"
-    ranked = sorted(features, key=_fault_rank_value, reverse=True)
-    return ranked[:max_faults], "fault_score_or_confidence_top"
+    known = [feature for feature in features if not _is_inferred_fault(feature)]
+    inferred = [feature for feature in features if _is_inferred_fault(feature)]
+    if len(known) >= max_faults:
+        return known[:max_faults], "known_faults_preserved_source_order_limited"
+    inferred_ranked = sorted(inferred, key=_fault_rank_value, reverse=True)
+    remaining = max_faults - len(known)
+    return known + inferred_ranked[:remaining], "known_faults_preserved_inferred_fault_score_top"
 
 
 def _fault_mesh_trace(

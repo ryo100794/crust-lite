@@ -4,7 +4,12 @@ from crust_lite.cli import command_run_all
 from crust_lite.config import load_config
 from crust_lite.io.metadata import read_metadata
 from crust_lite.paths import ProjectPaths
-from crust_lite.viz.visualize_3d import _fault_center_depth_km, _fault_rank_value, plot_z_m
+from crust_lite.viz.visualize_3d import (
+    _fault_center_depth_km,
+    _fault_rank_value,
+    _limit_faults,
+    plot_z_m,
+)
 from tests.helpers import isolated_project
 
 
@@ -52,3 +57,20 @@ def test_3d_fault_depth_handles_missing_known_fault_depth() -> None:
 def test_3d_fault_rank_handles_missing_known_fault_scores() -> None:
     assert _fault_rank_value({"properties": {"fault_score": None, "confidence": None}}) == 0.0
     assert _fault_rank_value({"properties": {"fault_score": None, "confidence": 0.4}}) == 0.4
+
+def test_3d_fault_limit_preserves_known_faults_before_inferred() -> None:
+    features = [
+        {"properties": {"segment_id": "known_a", "is_inferred": False}},
+        {"properties": {"segment_id": "known_b", "is_inferred": False}},
+        {"properties": {"segment_id": "inf_low", "is_inferred": True, "fault_score": 0.1}},
+        {"properties": {"segment_id": "inf_high", "is_inferred": True, "fault_score": 0.9}},
+    ]
+
+    limited, method = _limit_faults(features, 3)
+
+    assert method == "known_faults_preserved_inferred_fault_score_top"
+    assert [row["properties"]["segment_id"] for row in limited] == [
+        "known_a",
+        "known_b",
+        "inf_high",
+    ]
