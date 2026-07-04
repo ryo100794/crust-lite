@@ -26,6 +26,30 @@ def plot_z_m(z_m: float, vertical_exaggeration: float) -> float:
     return -1.0 * float(z_m) * vertical_exaggeration
 
 
+def _safe_float(value: Any, default: float | None = None) -> float | None:
+    if value in (None, ""):
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _fault_center_depth_km(props: dict[str, Any]) -> float:
+    center = _safe_float(props.get("center_depth_km"))
+    if center is not None:
+        return max(0.0, center)
+    top = _safe_float(props.get("top_depth_km"))
+    bottom = _safe_float(props.get("bottom_depth_km"))
+    if top is not None and bottom is not None:
+        return max(0.0, (top + bottom) / 2.0)
+    if bottom is not None:
+        return max(0.0, bottom / 2.0)
+    if top is not None:
+        return max(0.0, top)
+    return 5.0
+
+
 def _load_plotly() -> Any | None:
     try:
         import plotly.graph_objects as go  # type: ignore
@@ -154,9 +178,9 @@ def _fault_mesh_trace(
     showscale: bool = False,
 ) -> Any:
     props = feature.get("properties", {})
-    center_x = float(props.get("center_x_m", 0.0))
-    center_y = float(props.get("center_y_m", 0.0))
-    center_depth = float(props.get("center_depth_km", (float(props.get("top_depth_km", 0.0)) + float(props.get("bottom_depth_km", 10.0))) / 2.0))
+    center_x = _safe_float(props.get("center_x_m"), 0.0) or 0.0
+    center_y = _safe_float(props.get("center_y_m"), 0.0) or 0.0
+    center_depth = _fault_center_depth_km(props)
     verts = fault_rectangle_vertices(
         center_x,
         center_y,

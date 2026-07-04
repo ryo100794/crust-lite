@@ -4,7 +4,7 @@ from crust_lite.cli import command_run_all
 from crust_lite.config import load_config
 from crust_lite.io.metadata import read_metadata
 from crust_lite.paths import ProjectPaths
-from crust_lite.viz.visualize_3d import plot_z_m
+from crust_lite.viz.visualize_3d import _fault_center_depth_km, plot_z_m
 from tests.helpers import isolated_project
 
 
@@ -44,3 +44,7 @@ def test_run_all_sample_and_3d_outputs(tmp_path) -> None:
 
 def test_vertical_exaggeration_transform() -> None:
     assert plot_z_m(1000.0, 2.0) == -2000.0
+
+def test_3d_fault_depth_handles_missing_known_fault_depth() -> None:
+    assert _fault_center_depth_km({"center_depth_km": None, "bottom_depth_km": None}) == 5.0
+    assert _fault_center_depth_km({"top_depth_km": 2.0, "bottom_depth_km": 12.0}) == 7.0
