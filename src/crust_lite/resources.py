@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from crust_lite.config import AppConfig
@@ -37,7 +38,39 @@ class ExecutionPlan:
         }
 
 
-def available_memory_bytes() -> int:
+def _read_int(path: Path) -> int | None:
+    try:
+        raw = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not raw or raw == "max":
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    return value if 0 < value < 1 << 60 else None
+
+
+def _cgroup_available_memory_bytes() -> int | None:
+    pairs = [
+        (Path("/sys/fs/cgroup/memory.max"), Path("/sys/fs/cgroup/memory.current")),
+        (
+            Path("/sys/fs/cgroup/memory/memory.limit_in_bytes"),
+            Path("/sys/fs/cgroup/memory/memory.usage_in_bytes"),
+        ),
+    ]
+    values: list[int] = []
+    for limit_path, usage_path in pairs:
+        limit = _read_int(limit_path)
+        if limit is None:
+            continue
+        usage = _read_int(usage_path) or 0
+        values.append(max(64 * 1024 * 1024, limit - usage))
+    return min(values) if values else None
+
+
+def _host_available_memory_bytes() -> int | None:
     meminfo = "/proc/meminfo"
     try:
         with open(meminfo, encoding="utf-8") as fh:
@@ -51,7 +84,12 @@ def available_memory_bytes() -> int:
         page_size = os.sysconf("SC_PAGE_SIZE")
         return int(pages) * int(page_size)
     except (AttributeError, OSError, ValueError):
-        return 1_000_000_000
+        return None
+
+
+def available_memory_bytes() -> int:
+    values = [value for value in (_cgroup_available_memory_bytes(), _host_available_memory_bytes()) if value]
+    return min(values) if values else 1_000_000_000
 
 
 def choose_execution_plan(
