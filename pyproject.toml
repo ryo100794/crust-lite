@@ -42,7 +42,8 @@ domestic-waveform = ["HinetPy"]
 fast-json = ["orjson"]
 
 [project.scripts]
-crust-lite = "crust_lite.cli_known_free_v1107:main"
+crust-lite = "crust_lite.cli_data_canonical_v1120:main"
+crust-lite-posthoc = "crust_lite.cli_posthoc_data_v1120:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

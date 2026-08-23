@@ -195,7 +195,7 @@ def resolve_external_geology(
     command = [
         str(runtime.get("rclone_binary", "rclone")),
         "--config",
-        str(runtime.get("rclone_config", "/workspace/google-drive/rclone.conf")),
+        str(runtime.get("rclone_config", "/root/.config/rclone/rclone.conf")),
         "copyto",
         str(spec.get("recovery_path", "")),
         str(archive_path),

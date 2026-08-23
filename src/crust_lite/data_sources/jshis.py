@@ -12,6 +12,10 @@ LOGGER = get_logger(__name__)
 
 
 def fetch_jshis(config: AppConfig, paths: ProjectPaths, sample: bool = False) -> dict[str, Any]:
+    raise RuntimeError(
+        "J-SHIS placeholder/legacy fetch is forbidden in normal analysis; external "
+        "reference layers are explicit posthoc-only and unavailable as model input"
+    )
     paths.ensure()
     raw_dir = paths.data_raw / "jshis"
     raw_dir.mkdir(parents=True, exist_ok=True)

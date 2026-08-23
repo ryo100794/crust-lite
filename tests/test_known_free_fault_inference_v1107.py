@@ -4,7 +4,7 @@ import hashlib
 
 import pytest
 
-from crust_lite.cli import command_build_features, command_fetch
+from crust_lite.cli import command_build_features
 from crust_lite.config import load_config
 from crust_lite.io.geopackage import read_features, write_features
 from crust_lite.paths import ProjectPaths
@@ -13,7 +13,11 @@ from crust_lite.processing.fault_inference_resolver_v1107 import (
     infer_faults,
 )
 from crust_lite.processing.scoring_known_free_v1107 import FAULT_SCORE_WEIGHTS, fault_score
-from tests.helpers import isolated_project
+from tests.helpers import (
+    DEVELOPMENT_FIXTURE_MARKER,
+    isolated_project,
+    materialize_observation_only_development_fixture,
+)
 
 
 def test_fault_score_is_observation_only_and_normalized() -> None:
@@ -25,7 +29,10 @@ def test_fault_score_is_observation_only_and_normalized() -> None:
 
 def test_normal_inference_is_invariant_to_known_fault_geometry(tmp_path) -> None:
     config_path = str(isolated_project(tmp_path))
-    command_fetch(config_path, sample=True)
+    fixture = materialize_observation_only_development_fixture(config_path)
+    assert fixture["status"] == "DEVELOPMENT_FIXTURE_ONLY"
+    assert fixture["network_requests"] == 0
+    assert fixture["known_structure_artifacts_written"] == 0
     command_build_features(config_path)
     config = load_config(config_path)
     paths = ProjectPaths.from_config(config)
@@ -66,6 +73,13 @@ def test_normal_inference_is_invariant_to_known_fault_geometry(tmp_path) -> None
     assert hashlib.sha256(first_bytes).hexdigest() == hashlib.sha256(second_bytes).hexdigest()
     assert first_features == second_features
     assert all(FORBIDDEN_ANALYSIS_FIELDS.isdisjoint(f["properties"]) for f in first_features)
+
+
+def test_development_fixture_requires_explicit_isolated_marker(tmp_path) -> None:
+    config_path = isolated_project(tmp_path)
+    (tmp_path / DEVELOPMENT_FIXTURE_MARKER).unlink()
+    with pytest.raises(RuntimeError, match="explicit isolated-project marker"):
+        materialize_observation_only_development_fixture(config_path)
 
 
 def test_resolver_fails_closed_for_legacy_mode(tmp_path) -> None:

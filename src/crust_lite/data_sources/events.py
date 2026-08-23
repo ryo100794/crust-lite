@@ -75,6 +75,11 @@ def _fetch_fdsn(config: AppConfig) -> list[dict[str, Any]]:
 
 
 def fetch_events(config: AppConfig, paths: ProjectPaths, sample: bool = False) -> dict[str, Any]:
+    raise RuntimeError(
+        "generic event fetch is retired for normal analysis: FDSN/ComCat, local mixed CSV, "
+        "and sample fallback are forbidden; use formal Hi-net pointers via "
+        "formal_input_resolver_v1120"
+    )
     paths.ensure()
     sample_path = paths.data_raw / "sample" / "sample_events.csv"
     is_sample = sample

@@ -1,0 +1,71 @@
+region:
+  name: japan_formal_hinet_only
+  bbox: [122.0, 20.0, 154.0, 46.5]
+  crs_local: EPSG:3857
+  start_date: "2000-01-01"
+  end_date: "2026-08-23"
+
+filters:
+  min_magnitude: 0.0
+  max_depth_km: 700.0
+  mechanism_min_magnitude: 0.0
+  max_events_for_waveforms: 0
+
+simulation:
+  dt_days: 30
+  years: 1
+  n_ensemble: 1
+  shear_modulus_pa: 3.0e10
+  poisson_ratio: 0.25
+  effective_friction_range: [0.2, 0.6]
+  cohesion_pa_range: [1.0e6, 1.0e7]
+  effective_normal_stress_pa_range: [1.0e7, 1.0e8]
+  random_seed: 1120
+
+outputs:
+  write_maps: false
+  write_dashboard: false
+  write_report: false
+
+data_sources:
+  use_fdsn: false
+  fdsn_client: DISABLED_FORMAL
+  catalog_source: NIED Hi-net authenticated event catalog
+  use_jshis: false
+  use_gnss: false
+  use_active_faults: false
+  use_waveforms: false
+
+resources:
+  memory_mode: auto
+  db_engine: duckdb
+  max_memory_fraction: 0.35
+  in_memory_row_limit: 0
+  db_bulk_load_row_threshold: 100000
+  batch_rows_min: 10000
+  batch_rows_max: 250000
+
+preprocessing:
+  compact_enabled: false
+  time_bin_days: 30
+  spatial_bin_km: 10.0
+  depth_bin_km: 5.0
+  magnitude_bin: 0.5
+  retain_event_level_compact: false
+  materialize_database: false
+  prefer_compact_tables: false
+
+visualization_3d:
+  enabled: false
+  engine: plotly
+  html_standalone: true
+  include_plotlyjs: true
+
+tectonic_model:
+  enabled: false
+  source: posthoc-only
+  boundary_geojson: null
+  slab_depth_grid_csv: null
+  slab_contour_csv: null
+  default_show: false
+  fallback_to_schematic: false

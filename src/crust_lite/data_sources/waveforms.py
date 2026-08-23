@@ -62,6 +62,10 @@ def _read_feature_csv(path: Path) -> list[dict[str, Any]]:
 
 def fetch_waveforms(config: AppConfig, paths: ProjectPaths, sample: bool = False) -> dict[str, object]:
     """Populate waveform_feature.parquet from sample or configured CSV input."""
+    raise RuntimeError(
+        "generic/mixed waveform fetch is retired for normal analysis; use the verified "
+        "Hi-net downstream pointer via formal_input_resolver_v1120"
+    )
     paths.ensure()
     feature_csv = config.data_sources.waveform_feature_csv
     if feature_csv:
