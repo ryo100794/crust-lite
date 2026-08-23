@@ -1,0 +1,132 @@
+{
+  "schema": "formal-hinet-science-input-adapter-config-v1127",
+  "created_at_utc": "2026-08-23T17:40:47.148188+00:00",
+  "requirement_id": "NR-SCIENCE-FORMAL-ADAPTER-028",
+  "status": "INACTIVE_CANDIDATE",
+  "source_policy": "NIED_HINET_ONLY",
+  "event_id": "hinet_20260814000874",
+  "phases": [
+    "P",
+    "S"
+  ],
+  "frequency_hz": 1.0,
+  "expected": {
+    "events": 13,
+    "selected_event_rows": 1,
+    "rows_per_phase": 700,
+    "channels_per_phase_at_frequency": 140,
+    "base_stations_per_phase": 48,
+    "complete_3C_stations": 46,
+    "vertical_only_quarantined_horizontal_stations": 2,
+    "quarantined_horizontal_contract_total": 52,
+    "additional_time_correction_s": 0,
+    "projection_rows_per_phase": 80,
+    "projection_rows_per_phase_frequency": 16
+  },
+  "grid": {
+    "x_offsets_km": [
+      -20,
+      -15,
+      -10,
+      -5,
+      0,
+      5,
+      10,
+      15,
+      20
+    ],
+    "y_offsets_km": [
+      -20,
+      -15,
+      -10,
+      -5,
+      0,
+      5,
+      10,
+      15,
+      20
+    ],
+    "depths_km": [
+      1,
+      3,
+      5,
+      8,
+      12,
+      16,
+      20
+    ]
+  },
+  "inputs": {
+    "downstream_pointer": {
+      "path": "configs/hinet_downstream_input.json",
+      "sha256": "c4de62326ed7098d6eb2314178ff3eecbcbc5237f1b36c60d839c032a08c1ba8"
+    },
+    "events_pointer": {
+      "path": "configs/formal_hinet_events.json",
+      "sha256": "4a0e90bd61d03a40d3f862679e1c296d146323787662db02c17da74697a98836"
+    },
+    "database_pointer": {
+      "path": "configs/analysis_database.json",
+      "sha256": "ebd905a894134e6aa6e50c63f6455bb7f58de9757aba53ef6fde1d08791a6e57"
+    },
+    "phase_features": {
+      "path": "data/processed/hinet_downstream_v1111/phase_features.parquet",
+      "sha256": "8c96f28e7c72b74541f900e77d39500006dde39838faa3a2517ebb1fd7a3c270"
+    },
+    "phase_projections": {
+      "path": "data/processed/hinet_downstream_v1111/phase_projections.parquet",
+      "sha256": "b1e5d1ad5390e5efd560b16af471825c3ae44717e8f13544d886b4bd2f91efa6"
+    },
+    "formal_events": {
+      "path": "data/processed/hinet_pipeline_adapter_v1116/formal_hinet_events_v1116.parquet",
+      "sha256": "672149895acf2c2a4894c92e9ef1487196c7f7f30355999f117b6d7c7527afe0"
+    },
+    "formal_database": {
+      "path": "data/processed/crust_lite_hinet_only_20260823_v2.duckdb",
+      "sha256": "353a2ae188eedca855bcb4ffb355e9b6291fe08256443946c348ae2c520b66df"
+    },
+    "canonical_kernel": {
+      "path": "scripts/hinet_science_pipeline_canonical_v1123.py",
+      "sha256": "bee328ffdb6c1b21e40ee8a9d6a7f74dd796124bf749823b8b9a323ff4f2d4a7"
+    },
+    "canonical_kernel_config": {
+      "path": "configs/hinet_science_pipeline_candidate_v1123.json",
+      "sha256": "6b702f7b49f7063281a6ef22d04ceda81d002ff22f7520b44112628a98449f8d"
+    },
+    "independent_027": {
+      "path": "logs/audits/NR_SCIENCE_CANONICAL_INDEPENDENT_027/NR_SCIENCE_CANONICAL_INDEPENDENT_027.audit.json",
+      "sha256": "2c70ea8b80f91bc142b2de057cb758cc1f8c5b71cf09c494cfe05d2709340387"
+    },
+    "formal_adapter": {
+      "path": "scripts/hinet_science_formal_input_adapter_v1127.py",
+      "sha256": "ace28cafa464efd77a8b7dde0d892feed5c4f68b84a7e64b16a8fce62548a506"
+    }
+  },
+  "direct_wave_removal_gate": {
+    "requirement_id": "NR-SCIENCE-DIRECT-WAVE-REMOVAL-029",
+    "manifest_path": "configs/hinet_science_direct_wave_removal.json",
+    "required_status": "complete_pass",
+    "allow_self_asserted_boolean": false,
+    "kernel_run_without_gate": false
+  },
+  "known_structure_input_allowed": false,
+  "machine_learning_allowed": false,
+  "additional_UTC_correction_allowed": false,
+  "arbitrary_fixture_allowed": false,
+  "publication_allowed": false,
+  "pointer_activation_allowed": false,
+  "consumer_requirement_id": "NR-SCIENCE-VALID-DEPTH-EVENT-PACKAGE-059",
+  "selected_event_contract": {
+    "depth_km": 4.0,
+    "magnitude": 4.4,
+    "station_count": 48,
+    "eligible_trace_count": 140,
+    "component_counts": {
+      "E": 46,
+      "N": 46,
+      "U": 48
+    },
+    "max_azimuth_gap_deg": 251.65654877650638,
+    "sector_count_45deg": 3
+  }
+}
