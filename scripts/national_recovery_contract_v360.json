@@ -1,0 +1,153 @@
+{
+  "schema": "national-gs-recovery-contract-v360",
+  "declared_at_utc": "2026-08-19T00:00:00Z",
+  "purpose": "Restore the national 1.875 km tiled execution path without restoring rejected scientific behavior.",
+  "known_structure_policy": {
+    "faults_or_plate_interfaces_allowed_as_generation_input": false,
+    "faults_or_plate_interfaces_allowed_for_parameter_selection": false,
+    "allowed_use": "one final external diagnostic after every blind gate is frozen and passed",
+    "retuning_after_external_comparison": false
+  },
+  "lineage": {
+    "spatial_execution_base": {
+      "grid": "data/interim/phase_aware_gs_20260811/national_ultrahighres_v41/japan_marine_grid1p875km_v41.parquet",
+      "tiled_publisher_family": "scripts/publish_progressive_v57_tiles_impl_v83.py",
+      "allowed_use": "grid, bounded-memory spatial sharding, atomic tile publication and progressive loading only"
+    },
+    "scientific_base": {
+      "candidate": "frozen v168 source-shell-jacobian lineage",
+      "independent_gate": "data/interim/phase_aware_gs_20260811/hinet_independent_v108/v168_heldout_v176/independent_v168_gate_v175.json",
+      "required_gate_result": "pass"
+    },
+    "candidate_modifier": {
+      "candidate": "v283 source-shell downweight",
+      "status": "unapproved_until_retested_with_fixed_lightweight_cohorts",
+      "development_audit": "data/interim/phase_aware_gs_20260811/source_shell_v283_development/source_shell_downweight_audit_v284.json"
+    },
+    "prohibited_as_positive_baseline": [
+      "v354 Tohoku 7.5 km same-node fusion",
+      "three-of-sixteen-shard provisional v57 publication",
+      "any viewer-only smoothing or regional intensity equalization"
+    ],
+    "negative_controls": [
+      "v354 Tohoku 7.5 km same-node fusion",
+      "v57 provisional revision 3"
+    ]
+  },
+  "event_and_aperture_contract": {
+    "phase_families": ["P", "S"],
+    "common_station_identity_required_between_phases": true,
+    "minimum_common_stations_for_structural_fusion": 16,
+    "minimum_stations_per_independent_aperture": 8,
+    "minimum_azimuth_sectors_per_aperture": 4,
+    "primary_validation_common_stations": 48,
+    "events_below_structural_minimum": "diagnostic_only_and_zero_fusion_weight",
+    "station_views": "deterministic azimuth-balanced disjoint halves",
+    "event_weighting": "equal after per-event, per-phase robust normalization",
+    "magnitude_or_source_brightness": "used only for physical illumination correction; never as final structural intensity",
+    "required_event_products": [
+      "P response before and after source-artifact correction",
+      "S response before and after source-artifact correction",
+      "both independent station-aperture responses",
+      "per-node exposure, detection, coherence and source-direction sector support",
+      "per-event normalization scale and rejected-node reasons"
+    ]
+  },
+  "resolution_sequence": [
+    {
+      "stage": "lightweight",
+      "horizontal_spacing_km": 7.5,
+      "purpose": "algorithm and artifact rejection only; never a resolution acceptance test"
+    },
+    {
+      "stage": "preflight",
+      "horizontal_spacing_km": 3.75,
+      "purpose": "continuity, memory, tile and viewer integrity"
+    },
+    {
+      "stage": "required_final",
+      "horizontal_spacing_km": 1.875,
+      "depth_spacing_km": 0.5,
+      "depth_range_km": [0.5, 30.0]
+    },
+    {
+      "stage": "optional_ultra",
+      "horizontal_spacing_km": 0.9375,
+      "condition": "run only after the 1.875 km model passes every scientific and publication gate"
+    }
+  ],
+  "fixed_blind_regions": [
+    "kyushu",
+    "chugoku_shikoku",
+    "central_honshu",
+    "tohoku",
+    "hokkaido",
+    "nansei",
+    "pacific_offshore"
+  ],
+  "blind_quality_gates": {
+    "input_integrity": {
+      "all_values_finite": true,
+      "trace_units_recorded": true,
+      "unknown_units_may_mix_with_physical_units": false,
+      "picked_arrival_window_contains_used_samples": true,
+      "P_and_S_windows_nonoverlap_or_overlap_explicitly_audited": true
+    },
+    "reproducibility": {
+      "station_half_permutation_p_max": 0.01,
+      "event_half_permutation_p_max": 0.01,
+      "median_smaller_view_confirmation_min": 0.60,
+      "minimum_supported_heldout_events_per_primary_cohort": 24
+    },
+    "source_artifacts": {
+      "source_shell_width_km": 10.0,
+      "median_post_maximum_shell_fraction_absolute_max": 0.15,
+      "median_post_maximum_shell_fraction_relative_to_pre_max": 0.80,
+      "q90_post_maximum_shell_fraction_must_not_exceed_pre": true,
+      "near_source_fraction_must_not_increase_per_event": true,
+      "maximum_single_source_share_of_wall_candidate": 0.35,
+      "source_centered_radial_null_p_min": 0.001
+    },
+    "regional_coverage": {
+      "minimum_eligible_nodes_each_region_phase": 100,
+      "shallow_maximum_depth_km": 5.0,
+      "minimum_shallow_eligible_nodes_each_region_phase": 100,
+      "minimum_fraction_shallow_depth_planes_exposed": 0.80,
+      "minimum_fraction_shallow_depth_planes_eligible": 0.40,
+      "missing_region_is_failure": true
+    },
+    "dynamic_range": {
+      "raw_quantity": "event-normalized corrected response divided by illuminated-event exposure",
+      "minimum_regional_positive_q90_over_q10": 2.0,
+      "regional_equalization_allowed": false,
+      "display_mapping": "single monotonic mapping per phase fixed before regional review",
+      "maximum_fraction_clipped_at_either_display_endpoint": 0.01
+    },
+    "splat_continuity": {
+      "median_effective_sigma_over_grid_min": 0.65,
+      "median_effective_sigma_over_grid_max": 1.75,
+      "same_node_fusion_without_subgrid_information_allowed": false,
+      "depth_plane_occupancy_must_be_reported_per_region_phase": true,
+      "horizontal_and_vertical_periodicity_must_be_compared_with_jittered_spatial_null": true
+    },
+    "numerical_integrity": {
+      "all_array_sizes_exact": true,
+      "all_values_finite_and_nonnegative_where_required": true,
+      "detections_not_greater_than_exposures": true,
+      "exposures_not_greater_than_processed_events": true,
+      "direction_sectors_not_greater_than_detections": true,
+      "Cauchy_sum_square_relative_tolerance": 1e-10
+    }
+  },
+  "publication_contract": {
+    "fail_closed": true,
+    "10201_may_be_replaced_only_after_port_owner_conflict_is_resolved": true,
+    "low_quality_or_incomplete_candidate_publication": false,
+    "initial_view_uses_small_lod": true,
+    "high_resolution_tiles_load_in_background": true,
+    "calculation_and_transfer_progress_visible": true,
+    "controls": "quaternion orbit, consistent drag direction, pinch zoom, no gimbal lock",
+    "legend_and_controls_must_not_overlap_or_occlude_main_view": true,
+    "known_fault_and_plate_layers": "comparison overlays only and visually distinguishable from inferred GS"
+  }
+}

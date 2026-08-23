@@ -1,0 +1,59 @@
+{
+  "schema": "national-1p875-fixed-median-execution-contract-v464",
+  "declared_at_utc": "2026-08-19T07:15:00Z",
+  "required_readiness_gate": "data/interim/phase_aware_gs_20260811/recovery_v360/national_fixed_median_readiness_v465/national_fixed_median_readiness_v465.json",
+  "component_gates": {
+    "sanriku_pilot": "data/interim/phase_aware_gs_20260811/recovery_v360/national_1p875_overlap_pilot_v398/exact_xyz_median_pilot_gate_v451/exact_xyz_median_pilot_gate_v451.json",
+    "hokkaido_independent_transfer": "data/interim/phase_aware_gs_20260811/recovery_v360/hokkaido_exact_transfer_v453/median_transfer_v460/hokkaido_exact_median_transfer_gate_v459.json",
+    "national_cohort": "data/interim/phase_aware_gs_20260811/national_cohort_v462/national_cohort_v462.audit.json",
+    "tile_ownership": "data/interim/phase_aware_gs_20260811/recovery_v360/national_tile_manifest_v425.json"
+  },
+  "execution_allowed_before_readiness_pass": false,
+  "publication_allowed": false,
+  "known_structure_used": false,
+  "parameter_selection_used_known_structure": false,
+  "source_cap": {
+    "statistic": "median",
+    "quantile": 0.5,
+    "retuning_after_sanriku": false,
+    "retuning_after_hokkaido": false,
+    "amplification_allowed": false,
+    "near_source_fraction_may_increase": false
+  },
+  "event_cohort": {
+    "features": "data/interim/phase_aware_gs_20260811/national_cohort_v462/national_phase_spectra_v462.parquet",
+    "events": "data/interim/phase_aware_gs_20260811/national_cohort_v462/national_events_v462.parquet",
+    "supported": "data/interim/phase_aware_gs_20260811/national_cohort_v462/national_supported_events_v462.json",
+    "expected_events": 268,
+    "minimum_common_P_S_stations": 8,
+    "minimum_azimuth_sectors_per_phase": 3,
+    "all_picks_inside_phase_window": true
+  },
+  "source_grid": "data/interim/phase_aware_gs_20260811/national_ultrahighres_v41/japan_marine_grid1p875km_v41.parquet",
+  "source_grid_sha256": "fd493dd38163888bc016541586f17a9dc7ab63b1683d41c2f71f851608e29520",
+  "source_grid_expected_nodes": 11766320,
+  "horizontal_spacing_m": 1875.0,
+  "required_depths_km": [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 7.5, 9.0, 11.0, 13.0, 15.0, 18.0, 21.0, 24.0, 27.0, 30.0],
+  "tile_ownership": {
+    "manifest_expected_tiles": 187,
+    "maximum_nodes_per_tile": 120000,
+    "legacy_ownership_contract_sha256": "36215f73bd85e292ddb6c9bf7bd48ea28f9d889164226cb6d8ffc626af70d8d9",
+    "core_ownership": "every source-grid xyz node belongs to exactly one core; halo duplicates are excluded from global reductions",
+    "overlap_requirement": "all response, view, illumination and eventwise GS core-handoff attributes match the non-tiled reference"
+  },
+  "execution": {
+    "mode": "memory-bounded tiled streaming",
+    "loop_order": "event, phase, station, tile-core",
+    "coordinate_dtype": "float64",
+    "temporary_scope": "one station or one event-phase at a time",
+    "global_reductions": "disjoint cores only",
+    "checkpoint": "immutable input, parameter and code hashes per stage",
+    "quality_gate_after_each_tile": true,
+    "failed_tile_publication_allowed": false
+  },
+  "posthoc_validation": {
+    "known_faults_and_plate_interfaces_used_as_input": false,
+    "known_faults_and_plate_interfaces_used_for_parameter_selection": false,
+    "known_faults_and_plate_interfaces_allowed_only_after_blind_output_freeze": true
+  }
+}

@@ -1,0 +1,57 @@
+{
+  "schema": "hinet-direct-wave-component-window-proof-config-v1144",
+  "requirement_id": "NR-SCIENCE-DIRECT-WAVE-COMPONENT-WINDOW-049",
+  "status": "INACTIVE_ISOLATED_PROOF_CANDIDATE",
+  "event_id": "hinet_20260815000360",
+  "source_policy": "NIED_HINET_ONLY",
+  "estimation_band_hz": [0.5, 2.0],
+  "validation_band_hz": [2.5, 8.0],
+  "station_folds": 6,
+  "removal_strength": {"P": 1.0, "S": 0.5},
+  "quality": {
+    "validation_direct_ratio_median_max": 0.8,
+    "validation_direct_ratio_p90_max": 1.25,
+    "cross_retention_median_min": 0.5,
+    "cross_retention_median_max": 1.5,
+    "cross_retention_p10_min": 0.2,
+    "unused_window_max_abs_change": 1e-10,
+    "injected_retention_abs_error": 1e-10,
+    "scalar_response_relative_difference_min": 0.001,
+    "cpu_gpu_atol": 1e-10,
+    "cpu_gpu_rtol": 1e-12
+  },
+  "inputs": {
+    "v1129_config": {
+      "path": "configs/hinet_science_direct_wave_removal_candidate_v1129.json",
+      "sha256": "8fd74c6c4f983159c2d194e31efa8a47033f38528e52306bec080b57525fad4b"
+    },
+    "failed_independent_audit_035": {
+      "path": "logs/audits/NR_SCIENCE_DIRECT_WAVE_PROOF_INDEPENDENT_035/NR_SCIENCE_DIRECT_WAVE_PROOF_INDEPENDENT_035.audit.json",
+      "sha256": "b010c091d4c51105499c2a5c8511b9dec650a3d01c1ec15991cb4374a0d5ff1f"
+    },
+    "failed_v1140_code": {
+      "path": "scripts/hinet_direct_wave_independent_proof_v1140.py",
+      "sha256": "ffb00d70d4cd4aa15ec113b2e4755f9fc8df0820fb706ad3e0e036ed55919cfc"
+    },
+    "failed_v1140_config": {
+      "path": "configs/hinet_direct_wave_independent_proof_candidate_v1140.json",
+      "sha256": "3f34734d293e2cbd5b450c9ed0533cc42bc928036ab3bd1d37390ec6ee74e4be"
+    },
+    "component_gpu_parity_helper": {
+      "path": "scripts/hinet_direct_wave_component_gpu_parity_v1144.py",
+      "sha256": "9aa26883c977bc0f7931e11584eeb47f6a1f8421d6b79bff39bf6f81f28897b5"
+    }
+  },
+  "formal_window_contract": {
+    "binding": "event_id+phase_family+base_station_id+station_id+channel+raw_path",
+    "support": "each channel pick-centred taper clipped to that channel formal start/end",
+    "phase_alignment": "each sensor channel sampled on its own pick-relative coordinate before ENU ray estimation/validation",
+    "forbidden": ["station union min(start)/max(end)", "station median pick", "scalar response approximation"]
+  },
+  "known_structure_input_allowed": false,
+  "machine_learning_allowed": false,
+  "additional_time_correction_s": 0,
+  "kernel_or_GS_run_allowed": false,
+  "pointer_activation_allowed": false,
+  "publication_allowed": false
+}

@@ -1,0 +1,144 @@
+{
+  "schema": "national-1p875-physical-depth-contract-candidate-v1138",
+  "requirement_id": "NR-PIPELINE-DEPTH-CONTRACT-021",
+  "status": "INACTIVE_CANDIDATE",
+  "activation_allowed": false,
+  "publication_allowed": false,
+  "model_or_grid_mutation_allowed": false,
+  "authority": {
+    "rule": "The hash-bound source parquet coordinates are authoritative. Manifests and prose must exactly describe them; prose never overrides coordinates.",
+    "precedence": [
+      "source_grid_parquet",
+      "event_phase_tile_contract_v519",
+      "fixed_median_execution_contract_v464",
+      "source_grid_audit_and_generator",
+      "UI_and_human_prose"
+    ]
+  },
+  "physical_analysis_grid": {
+    "coverage": "national marine-mask analysis footprint",
+    "coordinate_columns": ["x_m", "y_m", "z_km"],
+    "horizontal_coordinate_unit": "m",
+    "horizontal_spacing_m": 1875.0,
+    "vertical_coordinate_column": "z_km",
+    "vertical_coordinate_unit": "km",
+    "positive_vertical_direction": "down",
+    "depth_plane_count": 19,
+    "depth_planes_km": [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 7.5, 9.0, 11.0, 13.0, 15.0, 18.0, 21.0, 24.0, 27.0, 30.0],
+    "adjacent_depth_intervals_km": [0.5, 0.5, 0.5, 0.5, 0.5, 1.0, 1.0, 1.0, 1.5, 1.5, 2.0, 2.0, 2.0, 3.0, 3.0, 3.0, 3.0, 3.0],
+    "interval_histogram": {"0.5": 5, "1.0": 3, "1.5": 2, "2.0": 3, "3.0": 5},
+    "interval_bands_km": [
+      {"from": 0.5, "through": 3.0, "adjacent_interval": 0.5},
+      {"from": 3.0, "through": 6.0, "adjacent_interval": 1.0},
+      {"from": 6.0, "through": 9.0, "adjacent_interval": 1.5},
+      {"from": 9.0, "through": 15.0, "adjacent_interval": 2.0},
+      {"from": 15.0, "through": 30.0, "adjacent_interval": 3.0}
+    ],
+    "uniform_depth_spacing": false,
+    "minimum_adjacent_interval_km": 0.5,
+    "maximum_adjacent_interval_km": 3.0,
+    "horizontal_cells_per_plane": 619280,
+    "source_node_count": 11766320,
+    "tile_count": 187,
+    "coordinate_dtype": "float64"
+  },
+  "display_transform": {
+    "part_of_physical_grid": false,
+    "vertical_exaggeration_unit": "dimensionless",
+    "changes_physical_depth_planes": false,
+    "rule": "A viewer may multiply rendered z by a dimensionless factor, but physical z_km, depth planes, intervals, source hashes and calculations remain unchanged.",
+    "current_single_event_viewer_default": 5.0,
+    "current_single_event_viewer_range": [1.0, 10.0],
+    "applies_to_national_grid_contract": false,
+    "quantization_depth_step_m_is_storage_precision_not_grid_spacing": true
+  },
+  "label_policy": {
+    "required_national_grid_label": "水平1.875 km; 深度0.5–30 kmの19不等間隔面 (隣接0.5–3.0 km)",
+    "uniform_0p5km_claim_allowed": false,
+    "bare_depth_resolution_0p5km_allowed": false,
+    "quantization_step_is_physical_resolution": false,
+    "vertical_exaggeration_is_physical_resolution": false,
+    "range_and_plane_count_without_uniform_claim": "accurate_but_should_link_this_contract",
+    "other_legacy_models_with_actual_uniform_0p5km_display_fields": "out_of_scope; do not bulk-relabel"
+  },
+  "legacy_depth_prose_quarantine": [
+    {
+      "path": "scripts/national_recovery_contract_v360.json",
+      "sha256": "8a18282663a05fc0b85bc8d134977713f99b6704c82e272427e305cd32e1353b",
+      "field": "resolution_sequence[native_national].depth_spacing_km",
+      "value": 0.5,
+      "classification": "REJECT_AS_UNIFORM_NATIONAL_DEPTH_DESCRIPTION",
+      "replacement": "Use exact depth_planes_km and adjacent_depth_intervals_km from this candidate contract."
+    },
+    {
+      "path": "scripts/equake_dashboard_10101_interactive_quantized_v945.py",
+      "sha256": "1f0736e0f7e3fa9cd5b50f1789b70852f4d0b38fab5b685483899151c14bb69a",
+      "field": "comment: 0.5 km vertical",
+      "classification": "AMBIGUOUS_LEGACY_VISUALIZATION_QUANTIZATION_NOT_PHYSICAL_GRID_SPACING",
+      "replacement": "Label 500 m as packet quantization/storage step and link physical depth-plane contract separately."
+    }
+  ],
+  "bound_inputs": {
+    "source_grid": {"path": "data/interim/phase_aware_gs_20260811/national_ultrahighres_v41/japan_marine_grid1p875km_v41.parquet", "sha256": "fd493dd38163888bc016541586f17a9dc7ab63b1683d41c2f71f851608e29520"},
+    "source_grid_audit": {"path": "data/interim/phase_aware_gs_20260811/national_ultrahighres_v41/japan_marine_grid1p875km_v41.audit.json", "sha256": "b09a8dd638310a926d2d8642d76efb799c221bd66532957c810b2cd557c8353c"},
+    "source_grid_generator": {"path": "scripts/build_national_ultrahighres_grid_v41.py", "sha256": "7eae04a291d507e5e68dc013ce6116ec6a4afc3b4943250caa91c8d16dcd2fd0"},
+    "tile_ownership_manifest": {"path": "data/interim/phase_aware_gs_20260811/recovery_v360/national_tile_manifest_v425.json", "sha256": "e72399754c0430975342131f2223b6eaed17b778d1363213c7a7ca5e24e61616"},
+    "tile_materialization_audit": {"path": "data/interim/phase_aware_gs_20260811/recovery_v360/national_grid_tiles_v479/national_grid_tiles_v479.audit.json", "sha256": "19cb0bd00eceebfa4bf2f459fbbb4d4125b2cf52bd54fa0d689911c8b11049ad"},
+    "event_phase_tile_contract": {"path": "data/interim/phase_aware_gs_20260811/recovery_v360/national_event_phase_tile_contract_v519.json", "sha256": "3f66c80d49a9c2a39dc5f3c0ba0fc276e739010cc17dd34690aac74f955175b4"},
+    "fixed_median_execution_contract": {"path": "scripts/national_fixed_median_execution_contract_v464.json", "sha256": "b3ebd24e52f612c1b95e0b26a37b9fe96fd5610a9a84a49d977f66e2523ccbed"},
+    "legacy_recovery_contract": {"path": "scripts/national_recovery_contract_v360.json", "sha256": "8a18282663a05fc0b85bc8d134977713f99b6704c82e272427e305cd32e1353b"},
+    "restore017_audit": {"path": "logs/audits/NR_PIPELINE_RESTORE_017/NR_PIPELINE_RESTORE_017.audit.json", "sha256": "3178c3e8cf3afbc0a72c8e7dca04e3a5a70c93572a814b89b6fef64bf98c41c7"},
+    "validator": {"path": "scripts/validate_national_depth_contract_v1138.py", "sha256": "d41b96c51dc385b6106001fb3caf3ee8616784a63e91a1bd87b5d6ec4d0f7a15"}
+  },
+  "label_inventory": [
+    {
+      "path": "scripts/root_10101_canonical_v1120.html",
+      "sha256": "40e267959074fd80503f8ea1ca83dc5b6576ccf28651c0689ff49633bccadc5c",
+      "required_literal": "深度0.5–30 km・19層",
+      "classification": "ACCURATE_RANGE_AND_COUNT_NO_UNIFORM_SPACING_CLAIM"
+    },
+    {
+      "path": "scripts/viewer_10101_canonical_v1120_r4.html",
+      "sha256": "621162ff53781a4314d66d477ecc590475d1d7c99d80de3ef9053f2e973a9d36",
+      "required_literal": "深さ倍率",
+      "classification": "DISPLAY_ONLY_DIMENSIONLESS_EXAGGERATION"
+    },
+    {
+      "path": "scripts/viewer_10101_canonical_meta_v1120.json",
+      "sha256": "209ca758c1ae91771d9e91523a6286200de32c231c7478c5eca49793406df93f",
+      "required_literal": "\"depth_exaggeration_default\":5.0",
+      "classification": "DISPLAY_ONLY_AND_NORTH_TOHOKU_NOT_NATIONAL"
+    },
+    {
+      "path": "scripts/equake_dashboard_10201_live_gate_v509.py",
+      "sha256": "13b74e4a11021b02502ccdc25975852a0d19adf89d23d2c27b108c6953fd3efa",
+      "required_literal": "水平格子間隔",
+      "classification": "ACCURATE_HORIZONTAL_ONLY_LABEL"
+    },
+    {
+      "path": "scripts/national_recovery_contract_v360.json",
+      "sha256": "8a18282663a05fc0b85bc8d134977713f99b6704c82e272427e305cd32e1353b",
+      "required_literal": "\"depth_spacing_km\": 0.5",
+      "classification": "QUARANTINED_FALSE_IF_READ_AS_UNIFORM_19_PLANE_SPACING"
+    },
+    {
+      "path": "scripts/equake_dashboard_10101_interactive_quantized_v945.py",
+      "sha256": "1f0736e0f7e3fa9cd5b50f1789b70852f4d0b38fab5b685483899151c14bb69a",
+      "required_literal": "0.5 km vertical",
+      "classification": "QUARANTINED_AMBIGUOUS_PACKET_QUANTIZATION_LABEL"
+    }
+  ],
+  "validator": {
+    "path": "scripts/validate_national_depth_contract_v1138.py",
+    "sha256": "d41b96c51dc385b6106001fb3caf3ee8616784a63e91a1bd87b5d6ec4d0f7a15",
+    "fail_closed_on": [
+      "any input hash mismatch",
+      "any changed/missing/reordered depth plane",
+      "any changed adjacent interval",
+      "uniform_depth_spacing=true",
+      "ambiguous depth_resolution_km field",
+      "vertical exaggeration or quantization presented as physical resolution",
+      "any tile depth/hash mismatch"
+    ]
+  }
+}
