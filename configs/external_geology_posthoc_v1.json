@@ -1,0 +1,79 @@
+{
+  "schema": "external-geology-posthoc-policy-v1",
+  "requirement_id": "NR-GEOREF-003",
+  "mode": "posthoc-known-structure",
+  "policy": {
+    "allowed_uses": ["posthoc correlation", "viewer overlay"],
+    "forbidden_uses": ["model input", "target", "calibration", "selection", "threshold tuning", "intensity adjustment"],
+    "normal_pipeline_known_structure_absent": true,
+    "cache": "root-private mktemp, checksum verified, extracted read-only, mandatory cleanup",
+    "fail_closed": true
+  },
+  "runtime": {
+    "rclone_binary": "rclone",
+    "rclone_config": "/workspace/google-drive/rclone.conf",
+    "fetch_timeout_seconds": 300
+  },
+  "datasets": {
+    "aist_gsj_active_fault_database": {
+      "posthoc_eligible": true,
+      "provider": "AIST Geological Survey of Japan (GSJ)",
+      "dataset": "Active Fault Database of Japan",
+      "version": "June 23, 2026 version",
+      "url": "https://gbank.gsj.jp/activefault/",
+      "license": "Fair use is limited to personal, educational, or noncommercial purposes; citation is required; other reproduction or use requires GSJ/AIST permission.",
+      "license_url": "https://gbank.gsj.jp/activefault/attention_e.html",
+      "crs": "geographic coordinates; exact embedded CRS is retained in the canonical KMZ/GeoPackage metadata",
+      "processing": "KMZ to fault_segment; trace-point, subsegment, and comparison derivatives are posthoc-only",
+      "archive_bytes": 10373120,
+      "archive_md5": "fa6151f4cb8b875571e65fa764eb93d6",
+      "recovery_path": "gdrive:workspace/equake/external_geology_reference/aist_gsj_active_faults/20260823/aist_gsj_active_faults_canonical.tar",
+      "primary_member": "data/processed/fault_segment.gpkg"
+    },
+    "usgs_slab2_v2": {
+      "posthoc_eligible": true,
+      "provider": "U.S. Geological Survey",
+      "dataset": "Slab2 - A Comprehensive Subduction Zone Geometry Model",
+      "version": "2018 Slab2 release; archived regional grid filenames dated 2018-02-24/26",
+      "url": "https://doi.org/10.5066/F7PV6JNV",
+      "license": "CC0 1.0 Universal; cite Hayes et al. (2018) and DOI 10.5066/F7PV6JNV.",
+      "license_url": "https://www.usgs.gov/data/slab2-a-comprehensive-subduction-zone-geometry-model",
+      "crs": "longitude/latitude 0.05-degree grids; depth in km",
+      "processing": "original depth/dip/uncertainty XYZ grids; depth grids may be converted to viewer wireframes only",
+      "archive_bytes": 55214080,
+      "archive_md5": "dceb991919d137ea7e04a37245722f9f",
+      "recovery_path": "gdrive:workspace/equake/external_geology_reference/usgs_slab2_v2/20260823/usgs_slab2_v2_canonical.tar",
+      "primary_member": "data/reference/slab2_japan"
+    },
+    "coarse_fault_reference_seed": {
+      "posthoc_eligible": false,
+      "provider": "unresolved project-local legacy reference",
+      "dataset": "Japan major active faults coarse seed",
+      "version": "unversioned",
+      "url": null,
+      "license": "unresolved",
+      "license_url": null,
+      "crs": "unresolved",
+      "processing": "quarantine archive only",
+      "archive_bytes": 133120,
+      "archive_md5": "968a7ecb2a3868b58a25b9c2a465e340",
+      "recovery_path": "gdrive:workspace/equake/external_geology_reference/unresolved_coarse_fault_seed/20260823/unresolved_coarse_fault_seed_canonical.tar",
+      "rejection_reason": "unresolved provider, version, license, and CRS"
+    },
+    "jshis_placeholder": {
+      "posthoc_eligible": false,
+      "provider": "NIED J-SHIS label; project-generated placeholder",
+      "dataset": "sample_jshis placeholder",
+      "version": "unversioned project placeholder",
+      "url": "https://www.j-shis.bosai.go.jp/",
+      "license": "No downloaded J-SHIS observation is present; placeholder is not a substantive reference dataset.",
+      "license_url": "https://www.j-shis.bosai.go.jp/en/agreement",
+      "crs": "not applicable",
+      "processing": "archive only",
+      "archive_bytes": 10240,
+      "archive_md5": "3b52a774e51abda21003ebdd37886c12",
+      "recovery_path": "gdrive:workspace/equake/external_geology_reference/nied_jshis_placeholder/20260823/nied_jshis_placeholder_canonical.tar",
+      "rejection_reason": "project-generated placeholder, not J-SHIS observational data"
+    }
+  }
+}

@@ -8,6 +8,7 @@ preparation.  No command emits deterministic earthquake-date predictions.
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 import sys
 from collections.abc import Callable
@@ -22,6 +23,7 @@ from crust_lite.data_sources.gnss import fetch_gnss
 from crust_lite.data_sources.jshis import fetch_jshis
 from crust_lite.data_sources.mechanisms import fetch_mechanisms
 from crust_lite.data_sources.waveforms import fetch_waveforms
+from crust_lite.io.database import database_status
 from crust_lite.logging import configure_logging, get_logger
 from crust_lite.paths import ProjectPaths
 from crust_lite.processing.array_projection import build_waveform_array_projection
@@ -31,10 +33,12 @@ from crust_lite.processing.fault_inference_resolver_v1107 import infer_faults
 from crust_lite.processing.gnss_features import build_gnss_features
 from crust_lite.processing.gpu_prep import build_gpu_prep
 from crust_lite.processing.historical_quality import build_historical_quality
-from crust_lite.processing.shallow_lineaments import build_shallow_lineaments
 from crust_lite.processing.simulation import run_simulation
 from crust_lite.processing.stress import compute_stress
-from crust_lite.processing.transfer_function import prepare_waveform_spectrum
+from crust_lite.processing.transfer_function import (
+    estimate_transfer_functions,
+    write_empty_transfer_outputs,
+)
 from crust_lite.processing.waveform_features import build_waveform_features
 from crust_lite.report_known_free_v1107 import export_outputs, write_summary
 from crust_lite.viz.dashboard import write_dashboard_stub
@@ -49,6 +53,14 @@ def _context(config_path: str | Path, verbose: bool = False) -> tuple[AppConfig,
     paths = ProjectPaths.from_config(config)
     paths.ensure()
     return config, paths
+
+
+def command_database_status(config_path: str, verbose: bool = False) -> dict[str, Any]:
+    """Verify and print the selected analysis database without mutating it."""
+    _, paths = _context(config_path, verbose)
+    result = database_status(paths)
+    print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+    return result
 
 
 def command_domestic_ingest(config_path: str, verbose: bool = False) -> dict[str, Any]:
@@ -100,21 +112,22 @@ def command_infer_faults(config_path: str, verbose: bool = False) -> dict[str, A
 
 def command_transfer_functions(config_path: str, sample: bool = False, verbose: bool = False) -> dict[str, Any]:
     config, paths = _context(config_path, verbose)
-    LOGGER.info(
-        "The transfer-functions compatibility command is restricted to synthetic-aperture spectrum preparation; "
-        "site-transfer and structure-anomaly products are not generated for downstream use."
-    )
-    return prepare_waveform_spectrum(config, paths, sample=sample)
+    if not sample and not config.data_sources.waveform_spectra_csv:
+        LOGGER.info("Skipping transfer functions because waveform_spectra_csv is not configured")
+        return write_empty_transfer_outputs(paths, "waveform_spectra_csv_not_configured", is_sample_data=False)
+    if not sample and config.data_sources.waveform_spectra_csv:
+        source_path = Path(config.data_sources.waveform_spectra_csv)
+        if not source_path.is_absolute():
+            source_path = paths.root / source_path
+        if not source_path.exists():
+            LOGGER.warning("Configured waveform spectra CSV is missing; transfer functions are not generated yet: %s", source_path)
+            return write_empty_transfer_outputs(paths, f"waveform_spectra_csv_missing:{source_path}", is_sample_data=False)
+    return estimate_transfer_functions(config, paths, sample=sample)
 
 
 def command_array_projection(config_path: str, sample: bool = False, verbose: bool = False) -> dict[str, Any]:
     config, paths = _context(config_path, verbose)
     return build_waveform_array_projection(config, paths, sample=sample)
-
-
-def command_shallow_lineaments(config_path: str, verbose: bool = False) -> dict[str, Any]:
-    config, paths = _context(config_path, verbose)
-    return build_shallow_lineaments(config, paths)
 
 
 def command_gpu_prep(config_path: str, sample: bool = False, verbose: bool = False) -> dict[str, Any]:
@@ -179,11 +192,8 @@ def command_run_all(config_path: str, sample: bool = False, verbose: bool = Fals
     results["fetch"] = command_fetch(config_path, sample=sample, verbose=verbose)
     results["domestic_ingest"] = command_domestic_ingest(config_path, verbose=verbose)
     results["build_features"] = command_build_features(config_path, verbose=verbose)
-    # Waveform-derived downstream products are intentionally routed through
-    # synthetic aperture projection. The compatibility transfer-functions
-    # command now only prepares the spectrum table used by this path.
+    results["transfer_functions"] = command_transfer_functions(config_path, sample=sample, verbose=verbose)
     results["array_projection"] = command_array_projection(config_path, sample=sample, verbose=verbose)
-    results["shallow_lineaments"] = command_shallow_lineaments(config_path, verbose=verbose)
     results["gpu_prep"] = command_gpu_prep(config_path, sample=sample, verbose=verbose)
     results["infer_faults"] = command_infer_faults(config_path, verbose=verbose)
     results["stress"] = command_stress(config_path, verbose=verbose)
@@ -206,7 +216,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         p.add_argument("--verbose", action="store_true")
         return p
 
-    for name in ["fetch", "domestic-ingest", "build-features", "compact-data", "infer-faults", "transfer-functions", "array-projection", "shallow-lineaments", "gpu-prep", "stress", "simulate", "export", "dashboard"]:
+    for name in ["database-status", "fetch", "domestic-ingest", "build-features", "compact-data", "infer-faults", "transfer-functions", "array-projection", "gpu-prep", "stress", "simulate", "export", "dashboard"]:
         p = add_common(name)
         if name in {"fetch", "transfer-functions", "array-projection", "gpu-prep"}:
             p.add_argument("--sample", action="store_true")
@@ -223,6 +233,7 @@ def _run_argparse(argv: list[str] | None = None) -> Any:
     parser = _build_arg_parser()
     args = parser.parse_args(argv)
     command_map: dict[str, Callable[..., Any]] = {
+        "database-status": command_database_status,
         "fetch": command_fetch,
         "domestic-ingest": command_domestic_ingest,
         "build-features": command_build_features,
@@ -230,7 +241,6 @@ def _run_argparse(argv: list[str] | None = None) -> Any:
         "infer-faults": command_infer_faults,
         "transfer-functions": command_transfer_functions,
         "array-projection": command_array_projection,
-        "shallow-lineaments": command_shallow_lineaments,
         "gpu-prep": command_gpu_prep,
         "stress": command_stress,
         "simulate": command_simulate,
@@ -252,6 +262,10 @@ def _run_typer() -> bool:
         return False
 
     app = typer.Typer(help="crust-lite CLI")
+
+    @app.command("database-status")
+    def database_status_cmd(config: str = typer.Option(...), verbose: bool = False) -> None:
+        command_database_status(config, verbose=verbose)
 
     @app.command("fetch")
     def fetch_cmd(config: str = typer.Option(...), sample: bool = False, verbose: bool = False) -> None:
@@ -285,10 +299,6 @@ def _run_typer() -> bool:
         config: str = typer.Option(...), sample: bool = False, verbose: bool = False
     ) -> None:
         command_array_projection(config, sample=sample, verbose=verbose)
-
-    @app.command("shallow-lineaments")
-    def shallow_lineaments_cmd(config: str = typer.Option(...), verbose: bool = False) -> None:
-        command_shallow_lineaments(config, verbose=verbose)
 
     @app.command("gpu-prep")
     def gpu_prep_cmd(

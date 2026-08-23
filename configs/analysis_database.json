@@ -1,0 +1,41 @@
+{
+  "schema": "crust-lite-analysis-database-pointer-v1",
+  "require_fail_closed": true,
+  "formal": {
+    "role": "formal_hinet_only",
+    "engine": "duckdb",
+    "path": "data/processed/crust_lite_hinet_only_20260823_v2.duckdb",
+    "sha256": "353a2ae188eedca855bcb4ffb355e9b6291fe08256443946c348ae2c520b66df",
+    "read_only": true,
+    "source_policy": "NIED_HINET_ONLY",
+    "catalog_source": "NIED Hi-net authenticated event catalog",
+    "acquisition_source": "nied_hinet_waveform",
+    "independent_audit": {
+      "path": "logs/hinet_only_db_v2_independent_reaudit_20260823.json",
+      "sha256": "21fee07630b4d08ea2e897973a63314629f856b3ca7f7f047a80a9aa2eafadd8",
+      "required_status": "PASS"
+    },
+    "expected_rows": {
+      "analysis_event": 19,
+      "event": 6528,
+      "formal_input_policy": 1,
+      "phase_spectrum": 18720,
+      "source_manifest": 3,
+      "station_observation": 9557,
+      "waveform_feature": 9557,
+      "waveform_spectrum": 47785
+    }
+  },
+  "development": {
+    "root": "data/development",
+    "requires_environment": "CRUST_LITE_ENABLE_DEVELOPMENT_DATABASE=1",
+    "formal_analysis_allowed": false,
+    "sqlite_implicit_fallback": false
+  },
+  "legacy_recovery": {
+    "runtime_selection_allowed": false,
+    "formal_analysis_allowed": false,
+    "procedure": "logs/NR_RDB_LEGACY_004_GDRIVE_RECOVERY_20260823.md",
+    "manifest": "logs/NR_RDB_LEGACY_004_GDRIVE_RECOVERY_20260823.json"
+  }
+}

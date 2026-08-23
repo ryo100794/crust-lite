@@ -1,9 +1,9 @@
 """Database helpers for compact CPU-side data management.
 
-DuckDB is preferred because the pipeline repeatedly scans Parquet/CSV features
-and aggregates large event-stress tables.  SQLite remains a conservative
-fallback, while mesh and stress workflows are structured so large arrays can be
-streamed or queried instead of held entirely in Python memory.
+The formal analysis database is the audited Hi-net-only DuckDB selected by the
+central resolver. SQLite is restricted to an explicitly acknowledged,
+isolated development store; it is never an implicit production fallback. Large
+arrays remain streamable or queryable instead of being held entirely in memory.
 """
 
 from __future__ import annotations
@@ -18,20 +18,35 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
+from crust_lite.io.database_selection import (
+    database_status as _database_status,
+    resolve_database,
+)
 from crust_lite.io.parquet import read_sidecar, read_table, write_sidecar
 from crust_lite.paths import ProjectPaths
 
 
 def duckdb_database_path(paths: ProjectPaths) -> Path:
-    return paths.data_processed / "crust_lite.duckdb"
+    selected = resolve_database(paths)
+    if selected.engine != "duckdb":
+        raise RuntimeError(f"selected database engine is {selected.engine}, not duckdb")
+    return selected.path
 
 
 def sqlite_database_path(paths: ProjectPaths) -> Path:
-    return paths.data_processed / "crust_lite.sqlite"
+    selected = resolve_database(paths)
+    if selected.engine != "sqlite":
+        raise RuntimeError(f"selected database engine is {selected.engine}, not sqlite")
+    return selected.path
 
 
 def database_path(paths: ProjectPaths) -> Path:
-    return duckdb_database_path(paths) if duckdb_available(paths) else sqlite_database_path(paths)
+    return resolve_database(paths).path
+
+
+def database_status(paths: ProjectPaths) -> dict[str, Any]:
+    """Return verified resolver/provenance state for startup diagnostics."""
+    return _database_status(paths)
 
 
 def _source_duckdb_dir(paths: ProjectPaths) -> Path:
@@ -55,7 +70,7 @@ def duckdb_available(paths: ProjectPaths | None = None) -> bool:
         # Prefer an explicitly source-built DuckDB when present. On some local
         # noexec mounts binary wheels cannot be loaded, but H200/RunPod venvs
         # normally can use the installed wheel. Import failure is caught below
-        # and falls back to SQLite.
+        # and reported by the fail-closed resolver; it never selects SQLite.
         _activate_source_duckdb(paths)
     try:
         import duckdb  # type: ignore  # noqa: F401
@@ -66,7 +81,7 @@ def duckdb_available(paths: ProjectPaths | None = None) -> bool:
 
 
 def database_engine(paths: ProjectPaths) -> str:
-    return "duckdb" if duckdb_available(paths) else "sqlite"
+    return resolve_database(paths).engine
 
 
 def database_available() -> bool:
@@ -157,19 +172,30 @@ def _duckdb_thread_count() -> int:
     return max(1, min(os.cpu_count() or 1, _thread_cap_for_memory(effective_memory_limit_bytes())))
 
 
-def connect(paths: ProjectPaths) -> Any:
-    """Open the project database and apply CPU/memory execution knobs."""
-    paths.data_processed.mkdir(parents=True, exist_ok=True)
-    if duckdb_available(paths):
+def connect(paths: ProjectPaths, *, read_only: bool | None = None) -> Any:
+    """Open the selected DB without permitting writes to formal/legacy data."""
+    selected = resolve_database(paths)
+    effective_read_only = selected.read_only if read_only is None else read_only
+    if selected.read_only and not effective_read_only:
+        raise RuntimeError(
+            f"database role {selected.role} is immutable; select an explicit "
+            "development mode for materialization"
+        )
+    if not effective_read_only:
+        selected.path.parent.mkdir(parents=True, exist_ok=True)
+    if selected.engine == "duckdb":
         import duckdb  # type: ignore
 
-        con = duckdb.connect(str(duckdb_database_path(paths)))
+        con = duckdb.connect(str(selected.path), read_only=effective_read_only)
         con.execute(f"PRAGMA threads={_duckdb_thread_count()}")
         memory_limit = duckdb_memory_limit()
         if memory_limit:
             con.execute(f"PRAGMA memory_limit='{memory_limit}'")
         return con
-    con = sqlite3.connect(sqlite_database_path(paths))
+    if effective_read_only:
+        con = sqlite3.connect(f"file:{selected.path}?mode=ro", uri=True)
+    else:
+        con = sqlite3.connect(selected.path)
     con.row_factory = sqlite3.Row
     return con
 
@@ -236,7 +262,7 @@ def _create_table_for_rows(con: Any, table_name: str, rows: list[dict[str, Any]]
 def materialize_rows(paths: ProjectPaths, table_name: str, rows: list[dict[str, Any]]) -> bool:
     if not rows:
         return False
-    con = connect(paths)
+    con = connect(paths, read_only=False)
     try:
         columns = _create_table_for_rows(con, table_name, rows)
         placeholders = ", ".join(["?"] * len(columns))
@@ -273,7 +299,7 @@ def materialize_file(paths: ProjectPaths, table_name: str, path: Path) -> bool:
 
 
 def _materialize_file_duckdb(paths: ProjectPaths, table_name: str, path: Path, meta: dict[str, Any]) -> bool:
-    con = connect(paths)
+    con = connect(paths, read_only=False)
     try:
         fmt = str(meta.get("physical_format", ""))
         literal = _sql_string(path)
@@ -298,7 +324,7 @@ def _materialize_csv_sqlite(paths: ProjectPaths, table_name: str, path: Path, ba
         columns = list(reader.fieldnames or [])
         if not columns:
             return False
-        con = connect(paths)
+        con = connect(paths, read_only=False)
         try:
             con.execute(f"DROP TABLE IF EXISTS {_ident(table_name)}")
             cols_sql = ", ".join(f"{_ident(column)} TEXT" for column in columns)
@@ -322,7 +348,7 @@ def _materialize_csv_sqlite(paths: ProjectPaths, table_name: str, path: Path, ba
 
 def initialize_mesh_schema(paths: ProjectPaths) -> None:
     """Create normalized mesh tables for large gridded or FEM-adjacent data."""
-    con = connect(paths)
+    con = connect(paths, read_only=False)
     try:
         con.execute(
             """
@@ -392,7 +418,6 @@ def materialize_known_tables(paths: ProjectPaths) -> dict[str, str]:
         "mechanism": paths.data_processed / "mechanism.parquet",
         "gnss_daily": paths.data_processed / "gnss_daily.parquet",
         "gnss_features": paths.data_processed / "gnss_features.parquet",
-        "jshis_features": paths.data_processed / "jshis_features.parquet",
         "waveform_feature": paths.data_processed / "waveform_feature.parquet",
         "data_quality_epoch": paths.data_processed / "data_quality_epoch.parquet",
         "historical_data_profile": paths.data_processed / "historical_data_profile.parquet",
@@ -421,7 +446,7 @@ def materialize_known_tables(paths: ProjectPaths) -> dict[str, str]:
             results[name] = "materialized" if materialize_file(paths, name, path) else "skipped"
         except Exception as exc:
             results[name] = f"failed: {type(exc).__name__}: {exc}"
-    metadata_path = paths.data_processed / f"crust_lite.{engine}.metadata.json"
+    metadata_path = database_path(paths).with_suffix(f".{engine}.metadata.json")
     metadata_path.write_text(
         json.dumps(
             {
@@ -443,7 +468,7 @@ def materialize_known_tables(paths: ProjectPaths) -> dict[str, str]:
 
 
 def create_stress_table(paths: ProjectPaths) -> Any:
-    con = connect(paths)
+    con = connect(paths, read_only=False)
     con.execute("DROP TABLE IF EXISTS stress_state")
     con.execute(
         """
