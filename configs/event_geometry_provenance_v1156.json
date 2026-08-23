@@ -1,0 +1,21 @@
+{
+  "schema": "event-geometry-provenance-build-config-v1156",
+  "requirement_id": "NR-SCIENCE-EVENT-GEOMETRY-PROVENANCE-064",
+  "event_id": "hinet_20260814000874",
+  "formal_db_path": "data/processed/crust_lite_hinet_only_20260823_v2.duckdb",
+  "formal_db_sha256": "353a2ae188eedca855bcb4ffb355e9b6291fe08256443946c348ae2c520b66df",
+  "station_acquisition_source": "nied_hinet_waveform",
+  "expected_station_observation_rows": 144,
+  "expected_unique_stations": 48,
+  "ellipsoid": "WGS84",
+  "coordinate_order": "longitude_latitude",
+  "direction": "event_to_station_forward_azimuth",
+  "duplicate_policy": "one_exact_coordinate_per_station_after_channel_dedup",
+  "gap_definition": "maximum_adjacent_sorted_forward_azimuth_difference_including_circular_wrap",
+  "sector_width_deg": 45.0,
+  "expected_occupied_sector_count": 3,
+  "expected_max_gap_deg": 251.6565487763591,
+  "numeric_tolerance_deg": 1e-9,
+  "superseded_old_gap_deg": 251.45596985662473,
+  "output_path": "data/processed/event_geometry_provenance_v1156/hinet_20260814000874.geometry.json"
+}
